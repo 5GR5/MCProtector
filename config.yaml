@@ -1,0 +1,21 @@
+listen_host: "0.0.0.0"
+listen_port: 8080
+
+# Upstream MCP server endpoint (local PoC)
+upstream_url: "http://127.0.0.1:9000/mcp/message"
+
+# Model evaluation gate
+enable_model_eval: true
+risk_threshold: 0.80
+model_decision: "CHALLENGE"   # CHALLENGE or DENY
+
+# Mitigation
+enable_mitigation: true
+blocklist_duration_sec: 120
+
+# Logging outputs
+log_mode: "console_json"      # console_json or console_json_and_file
+log_file_path: "logs/poc.jsonl"
+
+# Demo helper: include a concise human-readable log line in addition to JSON
+demo_human_log: true
