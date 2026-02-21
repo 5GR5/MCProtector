@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 
+# Timestamp helper
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -24,7 +25,7 @@ class EventEmitter:
         # JSON to stdout
         print(line, flush=True)
 
-        # Optional human-friendly summary to stderr (demo readability)
+        # Optional human-friendly summary to stderr
         if self.demo_human_log:
             self._human_line(event)
 

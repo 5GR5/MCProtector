@@ -7,6 +7,7 @@ import yaml
 
 LogMode = Literal["console_json", "console_json_and_file"]
 
+# Configuration dataclass with YAML loading and env var overrides
 
 @dataclass
 class ProxyConfig:

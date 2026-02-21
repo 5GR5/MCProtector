@@ -5,6 +5,11 @@ from .models import NormalizedRequest, RuleEvaluation, RiskEvaluation
 
 from .models import NormalizedRequest, RuleEvaluation, RuleViolation
 
+
+# Temporary stub implementations for rule and risk evaluation logic, to be replaced with real OPA and ML model calls in the future.
+# Using for demonstration and testing purposes
+
+
 def evaluate_rules(req: NormalizedRequest) -> RuleEvaluation:
     # FORBIDDEN_PATH demo rule: deny if filesystem.* touches /etc/passwd or .ssh
     path = None

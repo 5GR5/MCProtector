@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# Normalized request data structure used internally in the pipeline
 class NormalizedRequest(BaseModel):
     request_id: str
     trace_id: str
@@ -19,11 +20,13 @@ class NormalizedRequest(BaseModel):
     raw_body: Dict[str, Any] = Field(default_factory=dict)
 
 
+# Rule violation details
 class RuleViolation(BaseModel):
     rule: str
     detail: str
 
 
+# Rule evaluation result structure
 class RuleEvaluation(BaseModel):
     opa_policy_id: str = "poc-policy-v1"
     opa_result: str  # ALLOW / DENY
@@ -33,6 +36,7 @@ class RuleEvaluation(BaseModel):
     reason: str = "Rules evaluated"
 
 
+# Risk evaluation result structure
 class RiskEvaluation(BaseModel):
     model_name: str = "poc-llm-risk-scorer"
     model_version: str = "0.1"

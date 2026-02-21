@@ -5,6 +5,7 @@ from typing import Dict, Tuple
 import httpx
 
 
+# Function to forward the (potentially modified) request to the upstream MCP server
 async def forward_json(
     upstream_url: str,
     body: Dict,

@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 import uuid
 from typing import Any, Dict, Optional, Tuple
-
 from fastapi import Request
-
 from .config import ProxyConfig
 from .models import NormalizedRequest, RuleEvaluation, RiskEvaluation
 from .mitigation import Blocklist
@@ -19,6 +16,7 @@ except Exception:
     from .detection_stub import evaluate_rules, evaluate_risk  # type: ignore
 
 
+# Main pipeline function to handle incoming MCP messages
 def _client_ip(req: Request) -> str:
     xff = req.headers.get("x-forwarded-for")
     if xff:
@@ -28,6 +26,7 @@ def _client_ip(req: Request) -> str:
     return "unknown"
 
 
+# Extract bearer token if present
 def _bearer_token(req: Request) -> Optional[str]:
     auth = req.headers.get("authorization")
     if not auth:
@@ -122,7 +121,7 @@ async def handle_mcp_message(
         })
 
         # Rule evaluation
-        rule_eval: RuleEvaluation = evaluate_rules(nreq)  # type: ignore
+        rule_eval: RuleEvaluation = evaluate_rules(nreq) 
         emitter.emit({
             "timestamp": now_iso(),
             "level": "WARN" if rule_eval.opa_result == "DENY" else "INFO",
@@ -146,7 +145,7 @@ async def handle_mcp_message(
         # Model evaluation (config gated)
         risk_eval: Optional[RiskEvaluation] = None
         if cfg.enable_model_eval:
-            risk_eval = evaluate_risk(nreq, cfg.risk_threshold)  # type: ignore
+            risk_eval = evaluate_risk(nreq, cfg.risk_threshold)  
             emitter.emit({
                 "timestamp": now_iso(),
                 "level": "WARN" if risk_eval.risk_score >= risk_eval.risk_threshold else "INFO",
