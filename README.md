@@ -57,3 +57,88 @@ curl -s http://localhost:8080/mcp/message \
 ```
 
 You should see JSON events printed to stdout and a concise summary printed to stderr.
+
+---
+
+## MCP Server (Test Backend)
+
+The `mcp_server` package provides a minimal MCP server for testing the proxy.
+
+### Run MCP Server
+
+```bash
+python -m mcp_server.server --port 9000
+```
+
+### Available Tools
+
+| Tool | Description | Arguments |
+|------|-------------|-----------|
+| `filesystem.read` | Read file contents | `path` (string) |
+| `filesystem.write` | Write to file | `path`, `content` (strings) |
+| `net.http_get` | HTTP GET (stubbed) | `url` (string) |
+
+### Health Check
+
+```bash
+curl http://127.0.0.1:9000/health
+```
+
+---
+
+## MCP Client (Test CLI)
+
+The `mcp_client` package provides a CLI for testing MCP servers and the proxy.
+
+### Basic Commands
+
+```bash
+# List available tools
+python -m mcp_client.client --server http://127.0.0.1:9000 tools list
+
+# Call a tool
+python -m mcp_client.client --server http://127.0.0.1:9000 tools call \
+  --tool filesystem.read --args '{"path": "/project/readme.txt"}'
+```
+
+### Test Scenarios
+
+```bash
+# Scenario A: Normal allowed requests
+python -m mcp_client.client --server http://127.0.0.1:9000 scenario allowed
+
+# Scenario B: Policy violations (triggers detection rules)
+python -m mcp_client.client --server http://127.0.0.1:9000 scenario denied
+```
+
+### Scenario B Detection Rules
+
+| Test | Rule | Trigger |
+|------|------|---------|
+| Test 1 | `R2_UNSAFE_PARAMETER` | Read `/etc/passwd` (forbidden path) |
+| Test 2 | `R1_DISALLOWED_TOOL` | Call unknown tool `execute_command` |
+| Test 3 | `R3_INVALID_ARGUMENTS` | Missing required `path` argument |
+| Test 4 | `R2_UNSAFE_PARAMETER` | Write to `/root/.bashrc` (forbidden path) |
+
+---
+
+## Full PoC Demo Flow
+
+**Terminal 1 - Start MCP Server:**
+```bash
+python -m mcp_server.server --port 9000
+```
+
+**Terminal 2 - Start Proxy:**
+```bash
+uvicorn proxy.app:app --port 8080
+```
+
+**Terminal 3 - Run Client through Proxy:**
+```bash
+# Test allowed request
+python -m mcp_client.client --server http://127.0.0.1:8080/mcp/message scenario allowed
+
+# Test denied request (triggers alerts)
+python -m mcp_client.client --server http://127.0.0.1:8080/mcp/message scenario denied
+```
