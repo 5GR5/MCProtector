@@ -61,6 +61,8 @@ class MCPClient:
         headers = {
             "Content-Type": "application/json",
             "X-Client-ID": self.client_id,
+            "X-Session-Id": self.client_id,
+            "X-Forwarded-For": "10.0.0.50",
             "Authorization": f"Bearer {self.token}"
         }
 
@@ -263,8 +265,8 @@ def main():
     )
     parser.add_argument(
         '--server', '-s',
-        default='http://127.0.0.1:8080',
-        help='MCP server URL (default: http://127.0.0.1:8080)'
+        default='http://127.0.0.1:8080/mcp/message',
+        help='MCP server URL (default:http://127.0.0.1:8080/mcp/message)'
     )
     parser.add_argument(
         '--client-id', '-c',

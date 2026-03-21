@@ -4,7 +4,7 @@ MCProtector PoC - MCP Server Configuration
 
 # Server settings
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8080
+DEFAULT_PORT = 9000
 
 # Allowed paths for filesystem operations (for security policy demo)
 ALLOWED_PATHS = [
