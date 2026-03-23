@@ -26,6 +26,7 @@ class ProxyConfig:
     log_mode: LogMode = "console_json"
     log_file_path: str = "logs/poc.jsonl"
     demo_human_log: bool = True
+    trace_filter: str | None = None
 
     @staticmethod
     def load(path: str = "config.yaml") -> "ProxyConfig":
@@ -46,5 +47,6 @@ class ProxyConfig:
         cfg.log_mode = os.getenv("LOG_MODE", cfg.log_mode)  # type: ignore
         cfg.log_file_path = os.getenv("LOG_FILE_PATH", cfg.log_file_path)
         cfg.demo_human_log = os.getenv("DEMO_HUMAN_LOG", str(cfg.demo_human_log)).lower() in ("1", "true", "yes", "y")
+        cfg.trace_filter = os.getenv("TRACE_FILTER", cfg.trace_filter)
 
         return cfg

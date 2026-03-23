@@ -19,3 +19,6 @@ log_file_path: "logs/poc.jsonl"
 
 # Demo helper: include a concise human-readable log line in addition to JSON
 demo_human_log: true
+
+# Optional demo helper: only print matching trace IDs to stdout/stderr
+# trace_filter: "00000000-0000-0000-0000-000000000000"

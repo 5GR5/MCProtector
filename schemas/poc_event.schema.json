@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PoCEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "timestamp",
+    "level",
+    "event_type",
+    "component",
+    "request_id",
+    "trace_id",
+    "client_ip",
+    "mcp_method",
+    "decision",
+    "reason_code",
+    "reason"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "level": {
+      "type": "string",
+      "enum": ["DEBUG", "INFO", "WARN", "ERROR"]
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "REQUEST_RECEIVED",
+        "DETECTION_RULE_EVALUATED",
+        "DETECTION_MODEL_EVALUATED",
+        "DECISION_MADE",
+        "ACTION_APPLIED",
+        "REQUEST_FORWARDED",
+        "RESPONSE_RETURNED",
+        "ERROR"
+      ]
+    },
+    "component": {
+      "type": "string",
+      "enum": ["proxy", "opa", "model", "logger"]
+    },
+    "request_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "trace_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "session_id": {
+      "type": ["string", "null"]
+    },
+    "client_ip": {
+      "type": "string"
+    },
+    "mcp_method": {
+      "type": "string"
+    },
+    "tool_name": {
+      "type": ["string", "null"]
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["ALLOW", "DENY", "CHALLENGE", "NONE"]
+    },
+    "reason_code": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "opa_policy_id": {
+      "type": ["string", "null"]
+    },
+    "opa_result": {
+      "type": ["string", "null"],
+      "enum": ["ALLOW", "DENY", null]
+    },
+    "opa_matched_rules": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "string"
+      }
+    },
+    "violations": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "detail"],
+        "properties": {
+          "rule": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "model_name": {
+      "type": ["string", "null"]
+    },
+    "model_version": {
+      "type": ["string", "null"]
+    },
+    "risk_score": {
+      "type": ["number", "null"]
+    },
+    "risk_threshold": {
+      "type": ["number", "null"]
+    },
+    "model_reason_summary": {
+      "type": ["string", "null"]
+    },
+    "action_type": {
+      "type": ["string", "null"]
+    },
+    "action_target": {
+      "type": ["string", "null"]
+    },
+    "action_duration_sec": {
+      "type": ["integer", "null"]
+    },
+    "latency_ms": {
+      "type": ["number", "null"]
+    },
+    "stage_latency_ms": {
+      "type": ["number", "null"]
+    },
+    "payload_size_bytes": {
+      "type": ["integer", "null"]
+    },
+    "upstream_status": {
+      "type": ["integer", "null"]
+    }
+  }
+}

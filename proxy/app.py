@@ -5,12 +5,17 @@ from fastapi.responses import JSONResponse
 
 from .config import ProxyConfig
 from .mitigation import Blocklist
-from .observability import EventEmitter
+from observability import EventEmitter
 from .pipeline import handle_mcp_message
 
 cfg = ProxyConfig.load()
 # Logging setup
-emitter = EventEmitter(log_mode=cfg.log_mode, log_file_path=cfg.log_file_path, demo_human_log=cfg.demo_human_log)
+emitter = EventEmitter(
+    log_mode=cfg.log_mode,
+    log_file_path=cfg.log_file_path,
+    demo_human_log=cfg.demo_human_log,
+    trace_filter=cfg.trace_filter,
+)
 blocklist = Blocklist()
 
 app = FastAPI(title="MCProtector PoC Proxy", version="0.1")
