@@ -1,0 +1,26 @@
+INFO:     Started server process [35324]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+INFO:     Started server process [35324]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8081 (Press CTRL+C to quit)
+[REQUEST_RECEIVED] trace=40cc6c36-b1ad-4df6-aced-f113e77ca67b decision=NONE reason=RECEIVED method=tools/list tool=-
+[DETECTION_RULE_EVALUATED] trace=40cc6c36-b1ad-4df6-aced-f113e77ca67b decision=NONE reason=RULES_ALLOW method=tools/list tool=-
+[DETECTION_MODEL_EVALUATED] trace=40cc6c36-b1ad-4df6-aced-f113e77ca67b decision=NONE reason=MODEL_SCORE method=tools/list tool=- risk=0.1
+[DECISION_MADE] trace=40cc6c36-b1ad-4df6-aced-f113e77ca67b decision=ALLOW reason=ALLOW method=tools/list tool=-
+[REQUEST_FORWARDED] trace=40cc6c36-b1ad-4df6-aced-f113e77ca67b decision=ALLOW reason=FORWARD method=tools/list tool=-
+[RESPONSE_RETURNED] trace=40cc6c36-b1ad-4df6-aced-f113e77ca67b decision=ALLOW reason=UPSTREAM_RESPONSE method=tools/list tool=-
+[REQUEST_RECEIVED] trace=a5fb5fc3-8fcc-41ed-9db2-4e2c7fa0a11b decision=NONE reason=RECEIVED method=tools/call tool=filesystem.read
+[DETECTION_RULE_EVALUATED] trace=a5fb5fc3-8fcc-41ed-9db2-4e2c7fa0a11b decision=NONE reason=RULES_ALLOW method=tools/call tool=filesystem.read
+[DETECTION_MODEL_EVALUATED] trace=a5fb5fc3-8fcc-41ed-9db2-4e2c7fa0a11b decision=NONE reason=MODEL_SCORE method=tools/call tool=filesystem.read risk=0.2
+[DECISION_MADE] trace=a5fb5fc3-8fcc-41ed-9db2-4e2c7fa0a11b decision=ALLOW reason=ALLOW method=tools/call tool=filesystem.read
+[REQUEST_FORWARDED] trace=a5fb5fc3-8fcc-41ed-9db2-4e2c7fa0a11b decision=ALLOW reason=FORWARD method=tools/call tool=filesystem.read
+[RESPONSE_RETURNED] trace=a5fb5fc3-8fcc-41ed-9db2-4e2c7fa0a11b decision=ALLOW reason=UPSTREAM_RESPONSE method=tools/call tool=filesystem.read
+[REQUEST_RECEIVED] trace=a6b8ae2b-c15c-4333-a0fd-bec03b1335f5 decision=NONE reason=RECEIVED method=tools/call tool=filesystem.write
+[DETECTION_RULE_EVALUATED] trace=a6b8ae2b-c15c-4333-a0fd-bec03b1335f5 decision=NONE reason=RULES_ALLOW method=tools/call tool=filesystem.write
+[DETECTION_MODEL_EVALUATED] trace=a6b8ae2b-c15c-4333-a0fd-bec03b1335f5 decision=NONE reason=MODEL_SCORE method=tools/call tool=filesystem.write risk=0.2
+[DECISION_MADE] trace=a6b8ae2b-c15c-4333-a0fd-bec03b1335f5 decision=ALLOW reason=ALLOW method=tools/call tool=filesystem.write
+[REQUEST_FORWARDED] trace=a6b8ae2b-c15c-4333-a0fd-bec03b1335f5 decision=ALLOW reason=FORWARD method=tools/call tool=filesystem.write
+[RESPONSE_RETURNED] trace=a6b8ae2b-c15c-4333-a0fd-bec03b1335f5 decision=ALLOW reason=UPSTREAM_RESPONSE method=tools/call tool=filesystem.write

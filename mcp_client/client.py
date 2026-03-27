@@ -27,28 +27,40 @@ Examples:
 import argparse
 import json
 import sys
-import urllib.request
 import urllib.error
-from typing import Any
-from datetime import datetime, timezone
+import urllib.request
 import uuid
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 
 class MCPClient:
     """MCP Client for communicating with MCP servers."""
 
-    def __init__(self, server_url: str, client_id: str = None, token: str = None):
+    def __init__(
+        self,
+        server_url: str,
+        client_id: str | None = None,
+        token: str | None = None,
+        forwarded_for: str | None = None,
+    ):
         self.server_url = server_url.rstrip('/')
         self.client_id = client_id or f"client-{uuid.uuid4().hex[:8]}"
         self.token = token or f"token-{uuid.uuid4().hex[:16]}"
+        self.forwarded_for = forwarded_for or self._default_forwarded_for()
         self._request_counter = 0
+
+    @staticmethod
+    def _default_forwarded_for() -> str:
+        octets = uuid.uuid4().int.to_bytes(16, "big")
+        return f"10.{octets[0]}.{octets[1]}.{max(2, octets[2])}"
 
     def _next_request_id(self) -> int:
         """Generate next request ID."""
         self._request_counter += 1
         return self._request_counter
 
-    def _send_request(self, method: str, params: dict = None) -> dict:
+    def _send_request(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC request to the MCP server."""
         request_id = self._next_request_id()
         request_data = {
@@ -62,7 +74,7 @@ class MCPClient:
             "Content-Type": "application/json",
             "X-Client-ID": self.client_id,
             "X-Session-Id": self.client_id,
-            "X-Forwarded-For": "10.0.0.50",
+            "X-Forwarded-For": self.forwarded_for,
             "Authorization": f"Bearer {self.token}"
         }
 
@@ -121,7 +133,7 @@ class MCPClient:
         """List available tools on the MCP server."""
         return self._send_request("tools/list")
 
-    def call_tool(self, tool_name: str, arguments: dict = None) -> dict:
+    def call_tool(self, tool_name: str, arguments: dict | None = None) -> dict:
         """Call a tool on the MCP server."""
         return self._send_request("tools/call", {
             "name": tool_name,
@@ -129,7 +141,124 @@ class MCPClient:
         })
 
 
-def print_json(data: Any, title: str = None):
+def _response_outcome(response: dict) -> str:
+    if "error" in response:
+        return "denied"
+    result = response.get("result")
+    if isinstance(result, dict) and result.get("isError"):
+        return "denied"
+    return "ok"
+
+
+def _execute_step(
+    *,
+    title: str,
+    detail: str,
+    expected_outcome: str,
+    action: Callable[[], dict],
+) -> dict[str, Any]:
+    response = action()
+    actual_outcome = _response_outcome(response)
+    return {
+        "title": title,
+        "detail": detail,
+        "expected_outcome": expected_outcome,
+        "actual_outcome": actual_outcome,
+        "passed": actual_outcome == expected_outcome,
+        "response": response,
+    }
+
+
+def run_allowed_scenario(client: MCPClient) -> dict[str, Any]:
+    """Run Scenario A: Allowed normal requests."""
+    steps = [
+        _execute_step(
+            title="Step 1",
+            detail="Listing available tools.",
+            expected_outcome="ok",
+            action=client.list_tools,
+        ),
+        _execute_step(
+            title="Step 2",
+            detail="Reading file from allowed path '/project/data/config.json'.",
+            expected_outcome="ok",
+            action=lambda: client.call_tool("filesystem.read", {"path": "/project/data/config.json"}),
+        ),
+        _execute_step(
+            title="Step 3",
+            detail="Writing file to allowed path '/project/data/dashboard-scenario.txt'.",
+            expected_outcome="ok",
+            action=lambda: client.call_tool(
+                "filesystem.write",
+                {
+                    "path": "/project/data/dashboard-scenario.txt",
+                    "content": "Dashboard scenario run at " + datetime.now(timezone.utc).isoformat()
+                },
+            ),
+        ),
+    ]
+    passed = all(step["passed"] for step in steps)
+    return {
+        "name": "allowed",
+        "title": "SCENARIO A: Allowed Request",
+        "description": "Normal, policy-compliant requests that should pass through MCProtector.",
+        "passed": passed,
+        "steps": steps,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def run_denied_scenario(client: MCPClient) -> dict[str, Any]:
+    """Run Scenario B: Denied requests that trigger policy rules."""
+    steps = [
+        _execute_step(
+            title="Test 1",
+            detail="Attempting to read '/etc/passwd' (forbidden path).",
+            expected_outcome="denied",
+            action=lambda: client.call_tool("filesystem.read", {"path": "/etc/passwd"}),
+        ),
+        _execute_step(
+            title="Test 2",
+            detail="Attempting to call unknown tool 'execute_command'.",
+            expected_outcome="denied",
+            action=lambda: client.call_tool("execute_command", {"cmd": "whoami"}),
+        ),
+        _execute_step(
+            title="Test 3",
+            detail="Calling 'filesystem.read' without required 'path' argument.",
+            expected_outcome="denied",
+            action=lambda: client.call_tool("filesystem.read", {}),
+        ),
+        _execute_step(
+            title="Test 4",
+            detail="Attempting to write to '/root/.bashrc' (forbidden path).",
+            expected_outcome="denied",
+            action=lambda: client.call_tool(
+                "filesystem.write",
+                {"path": "/root/.bashrc", "content": "malicious content"},
+            ),
+        ),
+    ]
+    passed = all(step["passed"] for step in steps)
+    return {
+        "name": "denied",
+        "title": "SCENARIO B: Denied Request (Policy Violation)",
+        "description": "Requests that should be blocked and logged by MCProtector.",
+        "passed": passed,
+        "steps": steps,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def run_scenario(client: MCPClient, scenario_name: str) -> dict[str, Any]:
+    if scenario_name == "allowed":
+        return run_allowed_scenario(client)
+    if scenario_name == "denied":
+        return run_denied_scenario(client)
+    raise ValueError(f"Unknown scenario: {scenario_name}")
+
+
+def print_json(data: Any, title: str | None = None):
     """Pretty print JSON data."""
     if title:
         print(f"\n{'=' * 60}")
@@ -151,7 +280,6 @@ def print_result(response: dict, verbose: bool = False):
         if verbose:
             print_json(result, "Result")
         else:
-            # Simplified output
             if "tools" in result:
                 print(f"\n[OK] Found {len(result['tools'])} tools:")
                 for tool in result["tools"]:
@@ -169,6 +297,26 @@ def print_result(response: dict, verbose: bool = False):
 
     print_json(response, "Raw Response")
     return True
+
+
+def print_scenario_report(result: dict[str, Any], verbose: bool = False) -> bool:
+    print("\n" + "=" * 60)
+    print(f" {result['title']}")
+    print("=" * 60)
+    print(f"[*] {result['description']}")
+    print()
+
+    for step in result["steps"]:
+        print(f"[{step['title']}] {step['detail']}")
+        print_result(step["response"], verbose)
+        expected = step["expected_outcome"].upper()
+        actual = step["actual_outcome"].upper()
+        status_label = "PASS" if step["passed"] else "FAIL"
+        print(f"[{status_label}] Expected {expected}, got {actual}\n")
+
+    summary_label = "passed" if result["passed"] else "had unexpected results"
+    print(f"[*] Scenario {result['name']} completed - {summary_label}")
+    return result["passed"]
 
 
 def cmd_tools_list(client: MCPClient, args):
@@ -194,67 +342,14 @@ def cmd_tools_call(client: MCPClient, args):
 
 def cmd_scenario_allowed(client: MCPClient, args):
     """Run Scenario A: Allowed normal request."""
-    print("\n" + "=" * 60)
-    print(" SCENARIO A: Allowed Request")
-    print("=" * 60)
-    print("[*] This scenario demonstrates a normal, policy-compliant request")
-    print("[*] The request should pass through MCProtector without issues")
-    print()
-
-    # Step 1: List tools
-    print("[Step 1] Listing available tools...")
-    response = client.list_tools()
-    print_result(response, args.verbose)
-
-    # Step 2: Read from allowed path
-    print("\n[Step 2] Reading file from allowed path '/project/readme.txt'...")
-    response = client.call_tool("filesystem.read", {"path": "/project/readme.txt"})
-    print_result(response, args.verbose)
-
-    # Step 3: Write to allowed path
-    print("\n[Step 3] Writing to allowed path '/tmp/mcprotector/test.txt'...")
-    response = client.call_tool("filesystem.write", {
-        "path": "/tmp/mcprotector/test.txt",
-        "content": "Test content written at " + datetime.now(timezone.utc).isoformat()
-    })
-    print_result(response, args.verbose)
-
-    print("\n[*] Scenario A completed - all requests should be ALLOWED")
+    result = run_allowed_scenario(client)
+    print_scenario_report(result, args.verbose)
 
 
 def cmd_scenario_denied(client: MCPClient, args):
     """Run Scenario B: Denied request that triggers policy rules."""
-    print("\n" + "=" * 60)
-    print(" SCENARIO B: Denied Request (Policy Violation)")
-    print("=" * 60)
-    print("[*] This scenario demonstrates requests that violate security policy")
-    print("[*] MCProtector should detect and block/alert on these requests")
-    print()
-
-    # Test 1: Access forbidden path
-    print("[Test 1] R2_UNSAFE_PARAMETER - Attempting to read '/etc/passwd' (forbidden path)...")
-    response = client.call_tool("filesystem.read", {"path": "/etc/passwd"})
-    print_result(response, args.verbose)
-
-    # Test 2: Call unknown tool
-    print("\n[Test 2] R1_DISALLOWED_TOOL - Attempting to call unknown tool 'execute_command'...")
-    response = client.call_tool("execute_command", {"cmd": "whoami"})
-    print_result(response, args.verbose)
-
-    # Test 3: Missing required argument
-    print("\n[Test 3] R3_INVALID_ARGUMENTS - Calling 'filesystem.read' without required 'path' argument...")
-    response = client.call_tool("filesystem.read", {})
-    print_result(response, args.verbose)
-
-    # Test 4: Another forbidden path
-    print("\n[Test 4] R2_UNSAFE_PARAMETER - Attempting to write to '/root/.bashrc' (forbidden path)...")
-    response = client.call_tool("filesystem.write", {
-        "path": "/root/.bashrc",
-        "content": "malicious content"
-    })
-    print_result(response, args.verbose)
-
-    print("\n[*] Scenario B completed - these requests should trigger MCProtector alerts")
+    result = run_denied_scenario(client)
+    print_scenario_report(result, args.verbose)
 
 
 def main():
@@ -286,29 +381,22 @@ def main():
 
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
-    # tools subcommand
     tools_parser = subparsers.add_parser('tools', help='Tool operations')
     tools_subparsers = tools_parser.add_subparsers(dest='tools_command')
 
-    # tools list
-    tools_list_parser = tools_subparsers.add_parser('list', help='List available tools')
+    tools_subparsers.add_parser('list', help='List available tools')
 
-    # tools call
     tools_call_parser = tools_subparsers.add_parser('call', help='Call a tool')
     tools_call_parser.add_argument('--tool', required=True, help='Tool name to call')
     tools_call_parser.add_argument('--args', default='{}', help='Tool arguments as JSON string')
 
-    # scenario subcommand
     scenario_parser = subparsers.add_parser('scenario', help='Run pre-defined test scenarios')
     scenario_subparsers = scenario_parser.add_subparsers(dest='scenario_name')
 
     scenario_subparsers.add_parser('allowed', help='Scenario A: Normal allowed requests')
     scenario_subparsers.add_parser('denied', help='Scenario B: Requests that trigger policy violations')
 
-    # ping subcommand
     subparsers.add_parser('ping', help='Ping the MCP server')
-
-    # init subcommand
     subparsers.add_parser('init', help='Initialize connection with MCP server')
 
     args = parser.parse_args()
@@ -317,10 +405,8 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    # Create client
     client = MCPClient(args.server, args.client_id, args.token)
 
-    # Route to command handler
     if args.command == 'tools':
         if args.tools_command == 'list':
             cmd_tools_list(client, args)

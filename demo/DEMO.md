@@ -22,11 +22,12 @@ make poc          # or:  ./demo.sh
 This single command:
 1. Starts the MCP upstream server on **port 9000**
 2. Starts the MCProtector proxy on **port 8080**
-3. Runs **Scenario A** — legitimate requests (expect ALLOW)
-4. Runs **Scenario B** — policy-violating requests (expect DENY)
-5. Prints a trace summary (trace IDs grouped by ALLOW / DENY)
-6. Replays the first ALLOW trace and first DENY trace in human-readable form
-7. Saves all structured events to **`logs/poc.jsonl`**
+3. Starts the admin dashboard on **port 8081**
+4. Runs **Scenario A** — legitimate requests (expect ALLOW)
+5. Runs **Scenario B** — policy-violating requests (expect DENY)
+6. Prints a trace summary (trace IDs grouped by ALLOW / DENY)
+7. Replays the first ALLOW trace and first DENY trace in human-readable form
+8. Saves all structured events to **`logs/poc.jsonl`**
 
 ---
 
@@ -40,6 +41,7 @@ This single command:
 [STEP]  Starting MCProtector proxy on port 8080...
   Waiting for MCProtector proxy (pid 12346)....  ready
 [OK]    Both services are running.
+[INFO]  Dashboard available at http://127.0.0.1:8081
 ```
 
 ### Scenario A (all ALLOW)
@@ -51,9 +53,9 @@ This single command:
 
 [Step 1] Listing available tools...
 [OK] Found 3 tools: ...
-[Step 2] Reading file from allowed path '/project/readme.txt'...
+[Step 2] Reading file from allowed path '/project/data/config.json'...
 [OK] Tool execution result: ...
-[Step 3] Writing to allowed path '/tmp/mcprotector/test.txt'...
+[Step 3] Writing to allowed path '/project/data/dashboard-scenario.txt'...
 [OK] Tool execution result: ...
 [*] Scenario A completed - all requests should be ALLOWED
 ```

@@ -1,0 +1,14 @@
+<frozen runpy>:128: RuntimeWarning: 'mcp_server.server' found in sys.modules after import of package 'mcp_server', but prior to execution of 'mcp_server.server'; this may result in unpredictable behaviour
+2026-03-27 12:09:07,720 - INFO - ============================================================
+2026-03-27 12:09:07,720 - INFO - MCProtector PoC - MCP Server
+2026-03-27 12:09:07,720 - INFO - ============================================================
+2026-03-27 12:09:07,720 - INFO - Listening on http://127.0.0.1:9000
+2026-03-27 12:09:07,722 - INFO - Health check: http://127.0.0.1:9000/health
+2026-03-27 12:09:07,722 - INFO - Available tools: filesystem.read, filesystem.write, net.http_get
+2026-03-27 12:09:07,722 - INFO - ============================================================
+2026-03-27 12:09:10,540 - INFO - [127.0.0.1] MCP Request: method=tools/list, id=1
+2026-03-27 12:09:10,541 - INFO - [127.0.0.1] MCP Response: method=tools/list, success=true
+2026-03-27 12:09:10,864 - INFO - [127.0.0.1] MCP Request: method=tools/call, id=2
+2026-03-27 12:09:10,865 - INFO - [127.0.0.1] MCP Response: method=tools/call, success=true
+2026-03-27 12:09:11,201 - INFO - [127.0.0.1] MCP Request: method=tools/call, id=3
+2026-03-27 12:09:11,203 - INFO - [127.0.0.1] MCP Response: method=tools/call, success=true

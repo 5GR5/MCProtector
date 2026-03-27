@@ -4,6 +4,7 @@
 This package is a runnable PoC proxy that:
 
 * receives MCP JSON-RPC requests (`POST /mcp/message`)
+* serves an admin HTML dashboard on a separate port
 * normalizes them into a `NormalizedRequest`
 * runs rule detection and optional model scoring
 * decides ALLOW / DENY / CHALLENGE
@@ -232,6 +233,22 @@ pip install -r requirements.txt
 uvicorn proxy.app:app --host 0.0.0.0 --port 8080
 ```
 
+The proxy listens for MCP traffic on `http://127.0.0.1:8080/mcp/message`.
+
+The admin dashboard starts automatically on `http://127.0.0.1:8081`.
+
+Default dashboard password:
+
+```text
+admin123
+```
+
+Override with:
+
+```bash
+DASHBOARD_ADMIN_PASSWORD=your-password uvicorn proxy.app:app --host 0.0.0.0 --port 8080
+```
+
 Update `config.yaml`:
 
 * `upstream_url: "http://127.0.0.1:9000/mcp/message"`
@@ -309,7 +326,7 @@ curl http://127.0.0.1:9000/health
 python -m mcp_client.client --server http://127.0.0.1:9000 tools list
 
 python -m mcp_client.client --server http://127.0.0.1:9000 tools call \
-  --tool filesystem.read --args '{"path": "/project/readme.txt"}'
+  --tool filesystem.read --args '{"path": "/project/data/config.json"}'
 ```
 
 ---
@@ -347,6 +364,12 @@ python -m mcp_server.server --port 9000
 
 ```bash
 uvicorn proxy.app:app --port 8080
+```
+
+Dashboard:
+
+```text
+http://127.0.0.1:8081
 ```
 
 **Terminal 3 – Client via Proxy**
