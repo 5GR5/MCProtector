@@ -13,8 +13,12 @@
 # =============================================================================
 set -euo pipefail
 
+# demo.sh lives inside demo/ — the Python modules and config.yaml are one level up
+# (the project root). We always run from the project root so that
+# `python3 -m mcp_server.server`, `python3 -m proxy.app`, etc. resolve correctly.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 # ── Log paths ─────────────────────────────────────────────────────────────────
 LOG_FILE="logs/poc.jsonl"
@@ -216,14 +220,14 @@ wait_for_http "http://127.0.0.1:9000/health" "MCP server (pid $MCP_SERVER_PID)"
 step "Starting MCProtector proxy on port 8080..."
 #
 #  LOG_MODE=console_json_and_file   → writes every event to logs/poc.jsonl
-#  DETECTION_ALLOWED_BASE=/project  → /project/<anything> passes rule R1
-#                                     (matches MCP server's /project/ allowed path)
-#  BLOCKLIST_DURATION_SEC=5         → short block so Scenario B gets a fresh
-#                                     DENY+ACTION_APPLIED after the Scenario A
-#                                     write-to-/tmp block expires
+#                                     (also required for the dashboard to read logs)
+#  BLOCKLIST_DURATION_SEC=5         → short block so a re-run isn't blocked
+#
+#  Note: the proxy now auto-starts a dashboard server on port 8081 (configured
+#  in config.yaml / proxy/dashboard.py). That runs in a background thread inside
+#  the proxy process — no separate start needed here.
 #
 LOG_MODE=console_json_and_file \
-DETECTION_ALLOWED_BASE=/project \
 BLOCKLIST_DURATION_SEC=5 \
     python3 -m uvicorn proxy.app:app --host 0.0.0.0 --port 8080 \
     > "$PROXY_LOG" 2>&1 &
@@ -232,6 +236,7 @@ PROXY_PID=$!
 wait_for_http "http://127.0.0.1:8080/health" "MCProtector proxy (pid $PROXY_PID)"
 
 ok "Both services are running."
+info "Dashboard available at http://127.0.0.1:8081  (password: admin123)"
 echo ""
 sleep 0.3
 
