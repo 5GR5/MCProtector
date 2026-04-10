@@ -1,0 +1,36 @@
+policy_id: "product-policy-v1"
+default_env: "dev"
+config_reload_seconds: 5
+
+packs:
+  filesystem_pack: true
+  abuse_pack: true
+  identity_pack: false
+
+rules:
+  filesystem.path_outside_allowed_base: true
+  filesystem.path_traversal: true
+  filesystem.missing_required_args: true
+  abuse.sql_injection: true
+  abuse.large_payload: true
+  abuse.rapid_repeat_ip: true
+  abuse.reused_token_multi_ip: true
+  identity.missing_auth_token: true
+
+settings:
+  allowed_base: "/project/data"
+  tool_schemas:
+    filesystem.read: ["path"]
+    filesystem.write: ["path", "content"]
+    net.http_get: ["url"]
+    read_file: ["path"]
+    write_file: ["path", "content"]
+    list_directory: ["path"]
+    delete_file: ["path"]
+    query_db: ["query"]
+
+  large_payload_threshold_bytes: 4096
+  rapid_repeat_limit: 5
+  rapid_repeat_window_sec: 15
+  token_multi_ip_window_sec: 60
+  token_multi_ip_max_ips: 1
