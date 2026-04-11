@@ -13,6 +13,7 @@ from .errors import error_payload
 from .forwarder import forward_json
 from .mitigation import Blocklist
 from .models import NormalizedRequest, RiskEvaluation, RuleEvaluation
+from detection import evaluate_rules, evaluate_risk 
 
 # Try to import the real detection module. Fallback to stub if not available.
 try:
