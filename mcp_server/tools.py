@@ -14,6 +14,17 @@ SIMULATED_FILESYSTEM = {
     "/tmp/mcprotector/test.log": "2026-01-05 10:00:00 - System started"
 }
 
+SIMULATED_TABLES = {
+    "users": [
+        {"id": 1, "username": "alice", "role": "admin"},
+        {"id": 2, "username": "bob", "role": "analyst"},
+    ],
+    "orders": [
+        {"id": 101, "status": "open", "total": 42.5},
+        {"id": 102, "status": "closed", "total": 18.0},
+    ],
+}
+
 
 def _is_path_allowed(path: str) -> tuple[bool, str]:
     """Check if a path is allowed based on security policy."""
@@ -174,11 +185,58 @@ def handle_net_http_get(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle_query_db(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle query_db tool invocation.
+    Simulates a tiny read-only SQL server for proxy policy testing.
+    """
+    query = arguments.get("query")
+
+    if not query:
+        return {
+            "ok": False,
+            "error": {
+                "code": "MISSING_ARGUMENT",
+                "message": "Required argument 'query' is missing"
+            }
+        }
+
+    normalized = " ".join(query.lower().strip().split())
+    if normalized == "select id, username, role from users":
+        return {
+            "ok": True,
+            "result": {
+                "query": query,
+                "rows": SIMULATED_TABLES["users"],
+                "row_count": len(SIMULATED_TABLES["users"]),
+            }
+        }
+
+    if normalized == "select id, status, total from orders":
+        return {
+            "ok": True,
+            "result": {
+                "query": query,
+                "rows": SIMULATED_TABLES["orders"],
+                "row_count": len(SIMULATED_TABLES["orders"]),
+            }
+        }
+
+    return {
+        "ok": False,
+        "error": {
+            "code": "QUERY_NOT_ALLOWED",
+            "message": "Only predefined read-only demo queries are available"
+        }
+    }
+
+
 # Tool handler registry
 TOOL_HANDLERS = {
     "filesystem.read": handle_filesystem_read,
     "filesystem.write": handle_filesystem_write,
-    "net.http_get": handle_net_http_get
+    "net.http_get": handle_net_http_get,
+    "query_db": handle_query_db
 }
 
 

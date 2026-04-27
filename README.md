@@ -309,6 +309,7 @@ python -m mcp_server.server --port 9000
 | filesystem.read  | Read file       | `path`             |
 | filesystem.write | Write file      | `path`,`content` |
 | net.http_get     | HTTP GET (stub) | `url`              |
+| query_db         | SQL query (stub)| `query`            |
 
 ### Health
 
@@ -349,6 +350,7 @@ python -m mcp_client.client --server http://127.0.0.1:9000 scenario denied
 | Test 2 | R1_DISALLOWED_TOOL   | Unknown tool `execute_command` |
 | Test 3 | R3_INVALID_ARGUMENTS | Missing required `path`        |
 | Test 4 | R2_UNSAFE_PARAMETER  | Write `/root/.bashrc`          |
+| SQL Test | SQL_INJECTION     | Query payload containing `OR 1=1` |
 
 ---
 

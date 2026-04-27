@@ -69,5 +69,19 @@ TOOL_DEFINITIONS = {
             },
             "required": ["url"]
         }
+    },
+    "query_db": {
+        "name": "query_db",
+        "description": "Run a deterministic read-only SQL query against a simulated database",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The SQL query to execute"
+                }
+            },
+            "required": ["query"]
+        }
     }
 }
