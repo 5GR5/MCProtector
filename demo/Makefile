@@ -15,9 +15,16 @@
 LOG_FILE ?= logs/poc.jsonl
 
 # ── Full PoC demo ─────────────────────────────────────────────────────────────
+# demo.sh lives in the same directory as this Makefile (demo/).
+# $(dir $(lastword $(MAKEFILE_LIST))) resolves to that directory at runtime
+# so the target works whether you run `make` from demo/ or from the project root
+# via `make -f demo/Makefile poc`.
 .PHONY: poc
 poc:
-	@bash demo.sh
+	@bash "$(dir $(lastword $(MAKEFILE_LIST)))demo.sh"
+
+# All targets below must run from the project root (one level up from demo/).
+# $(MAKE) -C .. delegates each command to the project root directory.
 
 # ── Replay a single trace (pass TRACE=<uuid>) ─────────────────────────────────
 .PHONY: replay
@@ -25,37 +32,37 @@ replay:
 ifndef TRACE
 	$(error Usage: make replay TRACE=<trace_id>)
 endif
-	@python3 -m poc_logs --trace $(TRACE) --file $(LOG_FILE)
+	@cd .. && python3 -m poc_logs --trace $(TRACE) --file $(LOG_FILE)
 
 # ── Start MCP upstream server only ───────────────────────────────────────────
 .PHONY: server
 server:
-	python3 -m mcp_server.server --port 9000
+	cd .. && python3 -m mcp_server.server --port 9000
 
 # ── Start proxy only (file logging enabled) ───────────────────────────────────
 .PHONY: proxy
 proxy:
-	LOG_MODE=console_json_and_file \
+	cd .. && LOG_MODE=console_json_and_file \
 	python3 -m uvicorn proxy.app:app --host 0.0.0.0 --port 8080 --reload
 
 # ── Run client scenarios individually ────────────────────────────────────────
 .PHONY: scenario-a
 scenario-a:
-	python3 -m mcp_client.client scenario allowed
+	cd .. && python3 -m mcp_client.client scenario allowed
 
 .PHONY: scenario-b
 scenario-b:
-	python3 -m mcp_client.client scenario denied
+	cd .. && python3 -m mcp_client.client scenario denied
 
 # ── Unit tests ────────────────────────────────────────────────────────────────
 .PHONY: test
 test:
-	pytest tests/ -v
+	cd .. && pytest tests/ -v
 
 # ── Clean generated log files ─────────────────────────────────────────────────
 .PHONY: clean
 clean:
-	rm -f logs/poc.jsonl logs/proxy.log logs/mcp_server.log
+	rm -f ../logs/poc.jsonl ../logs/proxy.log ../logs/mcp_server.log
 	@echo "Log files removed."
 
 # ── Help ──────────────────────────────────────────────────────────────────────
