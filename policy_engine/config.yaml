@@ -1,0 +1,11 @@
+policy_id: "mcprotector-policy-v1"
+strategy: "deterministic_priority"
+config_reload_seconds: 5
+
+thresholds:
+  model_block_threshold: 0.95
+  model_challenge_threshold: 0.80
+
+behavior:
+  allow_without_model: true
+  unknown_rule_result_decision: "CHALLENGE"
