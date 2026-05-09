@@ -15,11 +15,6 @@ from .mitigation import Blocklist
 from .models import NormalizedRequest, RiskEvaluation, RuleEvaluation
 from detection import evaluate_rules, evaluate_risk 
 
-# Try to import the real detection module. Fallback to stub if not available.
-try:
-    from detection import evaluate_rules, evaluate_risk  # type: ignore
-except Exception:
-    from .detection_stub import evaluate_rules, evaluate_risk  # type: ignore
 
 
 def _client_ip(req: Request) -> str:
