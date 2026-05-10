@@ -19,6 +19,13 @@ class LogLevel(str, Enum):
     ERROR = "ERROR"
 
 
+class Severity(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
 class EventType(str, Enum):
     REQUEST_RECEIVED = "REQUEST_RECEIVED"
     DETECTION_RULE_EVALUATED = "DETECTION_RULE_EVALUATED"
@@ -87,6 +94,8 @@ class PoCEvent(BaseModel):
     action_type: Optional[str] = None
     action_target: Optional[str] = None
     action_duration_sec: Optional[int] = None
+
+    severity: Severity = Severity.LOW
 
     latency_ms: Optional[float] = None
     stage_latency_ms: Optional[float] = None

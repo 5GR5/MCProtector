@@ -7,6 +7,7 @@ from .events import (
     LogLevel,
     OPAResult,
     PoCEvent,
+    Severity,
     now_iso,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "LogLevel",
     "OPAResult",
     "PoCEvent",
+    "Severity",
     "now_iso",
 ]

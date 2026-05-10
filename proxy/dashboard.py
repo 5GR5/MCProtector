@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from mcp_client.client import MCPClient, run_scenario
-from observability import PoCEvent, now_iso
+from observability import PoCEvent, Severity, now_iso
 
 from .config import ProxyConfig
 from .mitigation import Blocklist
@@ -178,11 +178,27 @@ def _serialize_events(events: list[PoCEvent]) -> list[dict[str, Any]]:
     return [event.model_dump(mode="json", exclude_none=False) for event in events]
 
 
+_SEVERITY_RANK: dict[str, int] = {
+    Severity.CRITICAL.value: 4,
+    Severity.HIGH.value: 3,
+    Severity.MEDIUM.value: 2,
+    Severity.LOW.value: 1,
+}
+
+
+def _alert_priority_key(event: PoCEvent) -> tuple[int, int]:
+    sev = _SEVERITY_RANK.get(event.severity.value, 1)
+    decision_rank = {"DENY": 3, "CHALLENGE": 2, "ALLOW": 1, "NONE": 0}
+    dec = decision_rank.get(event.decision.value, 0)
+    return (-sev, -dec)
+
+
 def _is_alert(event: PoCEvent) -> bool:
     return (
         event.level.value in ("WARN", "ERROR")
         or event.decision.value in ("DENY", "CHALLENGE")
         or event.event_type.value in ("ACTION_APPLIED", "ERROR")
+        or event.severity.value in ("HIGH", "CRITICAL")
     )
 
 
@@ -212,6 +228,47 @@ def _build_overview(state: DashboardState) -> dict[str, Any]:
         ],
         "latest_event": latest_event,
     }
+
+
+def _build_timeline(state: DashboardState, max_traces: int = 6) -> list[dict[str, Any]]:
+    events = _read_events(state.cfg.log_file_path)
+
+    by_trace: dict[str, list[PoCEvent]] = {}
+    for event in events:
+        tid = str(event.trace_id)
+        by_trace.setdefault(tid, []).append(event)
+
+    for trace_events in by_trace.values():
+        trace_events.sort(key=lambda e: e.timestamp)
+
+    recent_traces = sorted(
+        by_trace.keys(),
+        key=lambda tid: max(e.timestamp for e in by_trace[tid]),
+        reverse=True,
+    )[:max_traces]
+
+    result: list[dict[str, Any]] = []
+    for tid in recent_traces:
+        trace_events = by_trace[tid]
+        first = trace_events[0]
+        final_decision = next(
+            (e.decision.value for e in reversed(trace_events) if e.decision.value != "NONE"),
+            "NONE",
+        )
+        max_severity = max(
+            (_SEVERITY_RANK.get(e.severity.value, 1) for e in trace_events),
+            default=1,
+        )
+        max_severity_label = next(k for k, v in _SEVERITY_RANK.items() if v == max_severity)
+        result.append({
+            "trace_id": tid,
+            "tool_name": first.tool_name or first.mcp_method,
+            "decision": final_decision,
+            "max_severity": max_severity_label,
+            "steps": _serialize_events(trace_events),
+        })
+
+    return result
 
 
 def _tool_test_definitions() -> list[dict[str, Any]]:
@@ -472,6 +529,14 @@ def _dashboard_page(state: DashboardState) -> str:
       --radius-lg: 22px;
       --radius-md: 18px;
       --radius-sm: 14px;
+      --sev-low: #6b7280;
+      --sev-low-soft: rgba(107, 114, 128, 0.12);
+      --sev-medium: #0369a1;
+      --sev-medium-soft: rgba(3, 105, 161, 0.13);
+      --sev-high: #d08611;
+      --sev-high-soft: rgba(208, 134, 17, 0.16);
+      --sev-critical: #cf3b32;
+      --sev-critical-soft: rgba(207, 59, 50, 0.14);
       font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
     }}
     * {{ box-sizing: border-box; }}
@@ -884,6 +949,99 @@ def _dashboard_page(state: DashboardState) -> str:
       background: var(--slate-soft);
       color: #516074;
     }}
+    .pill.sev-low,
+    .pill.sev-medium,
+    .pill.sev-high,
+    .pill.sev-critical {{
+      font-size: 0.72rem;
+      letter-spacing: 0;
+      padding: 3px 8px;
+      white-space: nowrap;
+    }}
+    .pill.sev-low {{ background: var(--sev-low-soft); color: var(--sev-low); }}
+    .pill.sev-medium {{ background: var(--sev-medium-soft); color: var(--sev-medium); }}
+    .pill.sev-high {{ background: var(--sev-high-soft); color: var(--sev-high); }}
+    .pill.sev-critical {{ background: var(--sev-critical-soft); color: var(--sev-critical); }}
+    #alerts td:first-child,
+    #events td:first-child {{
+      padding-right: 16px;
+    }}
+    #alerts td:nth-child(2),
+    #events td:nth-child(2) {{
+      font-size: 0.82rem;
+      color: var(--muted);
+    }}
+    .tl-list {{
+      display: grid;
+      gap: 14px;
+    }}
+    .tl-trace {{
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      background: var(--panel-soft);
+    }}
+    .tl-header {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }}
+    .tl-steps {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0;
+      align-items: flex-start;
+    }}
+    .tl-step {{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex: 1 1 100px;
+      max-width: 160px;
+      min-width: 0;
+      position: relative;
+    }}
+    .tl-step::after {{
+      content: "";
+      position: absolute;
+      top: 15px;
+      left: calc(50% + 16px);
+      right: calc(-50% + 16px);
+      height: 2px;
+      background: var(--line);
+      z-index: 0;
+    }}
+    .tl-step:last-child::after {{ display: none; }}
+    .tl-dot {{
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.68rem;
+      font-weight: 800;
+      border: 2px solid white;
+      box-shadow: 0 2px 6px rgba(24, 36, 51, 0.12);
+      z-index: 1;
+      flex-shrink: 0;
+    }}
+    .tl-dot.sev-low {{ background: var(--sev-low-soft); color: var(--sev-low); border-color: var(--sev-low); }}
+    .tl-dot.sev-medium {{ background: var(--sev-medium-soft); color: var(--sev-medium); border-color: var(--sev-medium); }}
+    .tl-dot.sev-high {{ background: var(--sev-high-soft); color: var(--sev-high); border-color: var(--sev-high); }}
+    .tl-dot.sev-critical {{ background: var(--sev-critical-soft); color: var(--sev-critical); border-color: var(--sev-critical); }}
+    .tl-label {{
+      margin-top: 6px;
+      font-size: 0.7rem;
+      text-align: center;
+      color: var(--muted);
+      line-height: 1.3;
+      word-break: break-word;
+      padding: 0 4px;
+      max-width: 100%;
+    }}
     .severity-bars {{
       display: grid;
       gap: 12px;
@@ -1265,10 +1423,11 @@ def _dashboard_page(state: DashboardState) -> str:
               <table>
                 <thead>
                   <tr>
-                    <th style="width: 20%;">Time</th>
-                    <th style="width: 20%;">Event</th>
-                    <th style="width: 18%;">Decision</th>
-                    <th style="width: 42%;">Summary</th>
+                    <th style="width: 13%; white-space: nowrap;">Severity</th>
+                    <th style="width: 17%;">Time</th>
+                    <th style="width: 18%;">Event</th>
+                    <th style="width: 15%;">Decision</th>
+                    <th style="width: 37%;">Summary</th>
                   </tr>
                 </thead>
                 <tbody id="alerts"></tbody>
@@ -1296,11 +1455,12 @@ def _dashboard_page(state: DashboardState) -> str:
             <table>
               <thead>
                 <tr>
-                  <th style="width: 16%;">Time</th>
-                  <th style="width: 18%;">Event</th>
-                  <th style="width: 18%;">Trace</th>
-                  <th style="width: 14%;">Decision</th>
-                  <th style="width: 14%;">Tool</th>
+                  <th style="width: 10%;">Severity</th>
+                  <th style="width: 14%;">Time</th>
+                  <th style="width: 16%;">Event</th>
+                  <th style="width: 16%;">Trace</th>
+                  <th style="width: 12%;">Decision</th>
+                  <th style="width: 12%;">Tool</th>
                   <th style="width: 20%;">Reason</th>
                 </tr>
               </thead>
@@ -1308,6 +1468,16 @@ def _dashboard_page(state: DashboardState) -> str:
             </table>
           </div>
         </div>
+      </section>
+
+      <section class="section" id="timeline-section">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Timeline</div>
+            <h2>Request lifecycle — pipeline flow per trace</h2>
+          </div>
+        </div>
+        <div class="tl-list" id="timeline"></div>
       </section>
     </div>
 
@@ -1368,6 +1538,23 @@ def _dashboard_page(state: DashboardState) -> str:
       const text = label || decision || "None";
       return `<span class="pill ${{decisionClass(decision)}}">${{escapeHtml(text)}}</span>`;
     }}
+
+    function severityBadge(sev) {{
+      const s = String(sev || "LOW").toUpperCase();
+      const css = s === "CRITICAL" ? "sev-critical" : s === "HIGH" ? "sev-high" : s === "MEDIUM" ? "sev-medium" : "sev-low";
+      return `<span class="pill ${{css}}">${{escapeHtml(s)}}</span>`;
+    }}
+
+    const TL_ABBREV = {{
+      REQUEST_RECEIVED: "RCV",
+      DETECTION_RULE_EVALUATED: "RULE",
+      DETECTION_MODEL_EVALUATED: "RISK",
+      DECISION_MADE: "DEC",
+      ACTION_APPLIED: "ACT",
+      REQUEST_FORWARDED: "FWD",
+      RESPONSE_RETURNED: "RSP",
+      ERROR: "ERR",
+    }};
 
     function metricCard(label, value, note, cssClass) {{
       return `
@@ -1658,11 +1845,12 @@ def _dashboard_page(state: DashboardState) -> str:
     function renderAlerts(rows) {{
       const target = document.getElementById("alerts");
       if (!rows.length) {{
-        target.innerHTML = `<tr><td colspan="4" class="empty-state" style="background: transparent;">No alerts yet.</td></tr>`;
+        target.innerHTML = `<tr><td colspan="5" class="empty-state" style="background: transparent;">No alerts yet.</td></tr>`;
         return;
       }}
       target.innerHTML = rows.map((event) => `
         <tr>
+          <td>${{severityBadge(event.severity)}}</td>
           <td>${{escapeHtml(formatTimestamp(event.timestamp))}}</td>
           <td>
             <div class="table-cell-title">${{escapeHtml(humanizeConstant(event.event_type))}}</div>
@@ -1739,11 +1927,12 @@ def _dashboard_page(state: DashboardState) -> str:
     function renderEvents(rows) {{
       const target = document.getElementById("events");
       if (!rows.length) {{
-        target.innerHTML = `<tr><td colspan="6" class="empty-state" style="background: transparent;">No events recorded yet.</td></tr>`;
+        target.innerHTML = `<tr><td colspan="7" class="empty-state" style="background: transparent;">No events recorded yet.</td></tr>`;
         return;
       }}
       target.innerHTML = rows.map((event) => `
         <tr>
+          <td>${{severityBadge(event.severity)}}</td>
           <td>${{escapeHtml(formatTimestamp(event.timestamp))}}</td>
           <td>
             <div class="table-cell-title">${{escapeHtml(humanizeConstant(event.event_type))}}</div>
@@ -1760,15 +1949,52 @@ def _dashboard_page(state: DashboardState) -> str:
       `).join("");
     }}
 
+    function renderTimeline(traces) {{
+      const target = document.getElementById("timeline");
+      if (!traces.length) {{
+        target.innerHTML = `<div class="empty-state">No request traces yet — run a scenario to generate traffic.</div>`;
+        return;
+      }}
+      target.innerHTML = traces.map((trace) => {{
+        const steps = (trace.steps || []).map((step) => {{
+          const sev = String(step.severity || "LOW").toLowerCase();
+          const abbrev = TL_ABBREV[step.event_type] || step.event_type.slice(0, 4);
+          const latency = step.stage_latency_ms != null
+            ? `${{step.stage_latency_ms}}ms`
+            : step.latency_ms != null ? `${{step.latency_ms}}ms` : "";
+          return `
+            <div class="tl-step">
+              <div class="tl-dot sev-${{sev}}" title="${{escapeHtml(step.event_type)}} — ${{escapeHtml(step.severity || 'LOW')}}">${{escapeHtml(abbrev)}}</div>
+              <div class="tl-label">
+                <div>${{escapeHtml(humanizeConstant(step.event_type))}}</div>
+                ${{latency ? `<div style="font-size:0.65rem;color:var(--muted)">${{escapeHtml(latency)}}</div>` : ""}}
+                ${{step.decision && step.decision !== "NONE" ? decisionPill(step.decision) : ""}}
+              </div>
+            </div>`;
+        }}).join("");
+        return `
+          <div class="tl-trace">
+            <div class="tl-header">
+              <code class="trace" title="${{escapeHtml(trace.trace_id)}}" style="font-size:0.82rem;">${{escapeHtml(trace.trace_id)}}</code>
+              ${{severityBadge(trace.max_severity)}}
+              ${{decisionPill(trace.decision)}}
+              <span style="color:var(--muted);font-size:0.82rem;"><code>${{escapeHtml(trace.tool_name || "—")}}</code></span>
+            </div>
+            <div class="tl-steps">${{steps}}</div>
+          </div>`;
+      }}).join("");
+    }}
+
     async function refreshDashboard() {{
       document.getElementById("status").textContent = "Refreshing live data...";
       try {{
-        const [overview, alerts, events, scenarios, blocklist] = await Promise.all([
+        const [overview, alerts, events, scenarios, blocklist, timeline] = await Promise.all([
           api("/api/overview"),
           api("/api/alerts"),
           api("/api/events"),
           api("/api/scenarios"),
           api("/api/blocklist"),
+          api("/api/timeline"),
         ]);
         if (!overview) {{
           return;
@@ -1785,6 +2011,7 @@ def _dashboard_page(state: DashboardState) -> str:
         renderAlerts((alerts && alerts.alerts) || []);
         renderLatestEvent(overview.latest_event || null);
         renderEvents((events && events.events) || []);
+        renderTimeline((timeline && timeline.traces) || []);
         document.getElementById("status").textContent = "Last updated " + new Date().toLocaleTimeString();
       }} catch (error) {{
         document.getElementById("status").textContent = error.message || "Refresh failed.";
@@ -2543,7 +2770,13 @@ def create_dashboard_app(state: DashboardState) -> FastAPI:
     async def alerts(request: Request, limit: int = 50) -> JSONResponse:
         _require_auth(request, state)
         alerts_only = [event for event in _read_events(state.cfg.log_file_path) if _is_alert(event)]
+        alerts_only.sort(key=_alert_priority_key)
         return JSONResponse({"alerts": _serialize_events(alerts_only[:max(1, min(limit, 200))])})
+
+    @app.get("/api/timeline")
+    async def timeline(request: Request, max_traces: int = 6) -> JSONResponse:
+        _require_auth(request, state)
+        return JSONResponse({"traces": _build_timeline(state, max(1, min(max_traces, 20)))})
 
     @app.get("/api/blocklist")
     async def blocklist(request: Request) -> JSONResponse:

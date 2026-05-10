@@ -7,7 +7,45 @@ from datetime import datetime
 from typing import Any, Mapping, Optional
 from uuid import UUID
 
-from .events import ComponentName, Decision, EventType, OPAResult, PoCEvent
+from .events import ComponentName, Decision, EventType, OPAResult, PoCEvent, Severity
+
+
+_CRITICAL_REASON_CODES = frozenset({
+    "UNSAFE_FILE_ACCESS", "SQL_INJECTION", "FORBIDDEN_PATH",
+})
+_HIGH_REASON_CODES = frozenset({
+    "BLOCKLIST_ACTIVE", "LLM_HIGH_RISK", "MITIGATION_BLOCK", "PROXY_ERROR",
+})
+
+
+def _rule_severity(matched_rules: list[str], opa_result: str) -> Severity:
+    if opa_result == "DENY":
+        if any(r in _CRITICAL_REASON_CODES for r in matched_rules):
+            return Severity.CRITICAL
+        return Severity.HIGH
+    if matched_rules:
+        return Severity.MEDIUM
+    return Severity.LOW
+
+
+def _risk_severity(risk_score: float, risk_threshold: float) -> Severity:
+    if risk_score >= 0.8:
+        return Severity.CRITICAL
+    if risk_score >= risk_threshold:
+        return Severity.HIGH
+    if risk_score >= 0.3:
+        return Severity.MEDIUM
+    return Severity.LOW
+
+
+def _decision_severity(decision: Decision, reason_code: str) -> Severity:
+    if decision == Decision.DENY:
+        if reason_code in _CRITICAL_REASON_CODES:
+            return Severity.CRITICAL
+        return Severity.HIGH
+    if decision == Decision.CHALLENGE:
+        return Severity.MEDIUM
+    return Severity.LOW
 
 
 @dataclass
@@ -63,6 +101,7 @@ class EventEmitter:
                 decision=Decision.NONE,
                 reason_code=reason_code,
                 reason=reason,
+                severity=Severity.LOW,
                 payload_size_bytes=payload_size_bytes,
             )
         )
@@ -85,7 +124,9 @@ class EventEmitter:
         reason: str,
         stage_latency_ms: Optional[float] = None,
     ) -> PoCEvent:
-        level = "WARN" if OPAResult(opa_result) == OPAResult.DENY else "INFO"
+        opa_result_enum = OPAResult(opa_result)
+        level = "WARN" if opa_result_enum == OPAResult.DENY else "INFO"
+        severity = _rule_severity(list(opa_matched_rules), str(opa_result))
         return self.emit(
             PoCEvent(
                 timestamp=timestamp,
@@ -101,6 +142,7 @@ class EventEmitter:
                 decision=Decision.NONE,
                 reason_code=reason_code,
                 reason=reason,
+                severity=severity,
                 opa_policy_id=opa_policy_id,
                 opa_result=opa_result,
                 opa_matched_rules=opa_matched_rules,
@@ -129,6 +171,7 @@ class EventEmitter:
         stage_latency_ms: Optional[float] = None,
     ) -> PoCEvent:
         level = "WARN" if risk_score >= risk_threshold else "INFO"
+        severity = _risk_severity(risk_score, risk_threshold)
         return self.emit(
             PoCEvent(
                 timestamp=timestamp,
@@ -144,6 +187,7 @@ class EventEmitter:
                 decision=Decision.NONE,
                 reason_code=reason_code,
                 reason=reason,
+                severity=severity,
                 model_name=model_name,
                 model_version=model_version,
                 risk_score=risk_score,
@@ -169,6 +213,7 @@ class EventEmitter:
     ) -> PoCEvent:
         decision_value = Decision(decision)
         level = "WARN" if decision_value in (Decision.DENY, Decision.CHALLENGE) else "INFO"
+        severity = _decision_severity(decision_value, reason_code)
         return self.emit(
             PoCEvent(
                 timestamp=timestamp,
@@ -184,6 +229,7 @@ class EventEmitter:
                 decision=decision_value,
                 reason_code=reason_code,
                 reason=reason,
+                severity=severity,
             )
         )
 
@@ -219,6 +265,7 @@ class EventEmitter:
                 decision=decision,
                 reason_code=reason_code,
                 reason=reason,
+                severity=Severity.HIGH,
                 action_type=action_type,
                 action_target=action_target,
                 action_duration_sec=action_duration_sec,
@@ -254,6 +301,7 @@ class EventEmitter:
                 decision=decision,
                 reason_code=reason_code,
                 reason=reason,
+                severity=Severity.LOW,
             )
         )
 
@@ -288,6 +336,7 @@ class EventEmitter:
                 decision=decision,
                 reason_code=reason_code,
                 reason=reason,
+                severity=Severity.LOW,
                 upstream_status=upstream_status,
                 latency_ms=latency_ms,
             )
@@ -321,6 +370,7 @@ class EventEmitter:
                 decision=Decision.NONE,
                 reason_code=reason_code,
                 reason=reason,
+                severity=Severity.HIGH,
             )
         )
 
