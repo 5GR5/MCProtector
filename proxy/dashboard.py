@@ -104,10 +104,20 @@ class DashboardState:
     proxy_url: str
     scenario_history: list[dict[str, Any]] = field(default_factory=list)
     scenario_lock: threading.Lock = field(default_factory=threading.Lock)
+    closed_alerts: set[str] = field(default_factory=set)
+    closed_alerts_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record_scenario(self, result: dict[str, Any]) -> None:
         self.scenario_history.insert(0, result)
         del self.scenario_history[10:]
+
+    def close_alert(self, alert_id: str) -> None:
+        with self.closed_alerts_lock:
+            self.closed_alerts.add(alert_id)
+
+    def reopen_alert(self, alert_id: str) -> None:
+        with self.closed_alerts_lock:
+            self.closed_alerts.discard(alert_id)
 
     def blocklist_entries(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
@@ -188,15 +198,19 @@ _SEVERITY_RANK: dict[str, int] = {
 
 def _alert_priority_key(event: PoCEvent) -> tuple[int, int]:
     sev = _SEVERITY_RANK.get(event.severity.value, 1)
-    decision_rank = {"DENY": 3, "CHALLENGE": 2, "ALLOW": 1, "NONE": 0}
+    decision_rank = {"DENY": 2, "ALLOW": 1, "NONE": 0}
     dec = decision_rank.get(event.decision.value, 0)
     return (-sev, -dec)
 
 
+_INTERMEDIATE_EVENT_TYPES = {"DETECTION_RULE_EVALUATED", "DETECTION_MODEL_EVALUATED", "REQUEST_RECEIVED", "REQUEST_FORWARDED", "RESPONSE_RETURNED"}
+
 def _is_alert(event: PoCEvent) -> bool:
+    if event.event_type.value in _INTERMEDIATE_EVENT_TYPES:
+        return False
     return (
         event.level.value in ("WARN", "ERROR")
-        or event.decision.value in ("DENY", "CHALLENGE")
+        or event.decision.value == "DENY"
         or event.event_type.value in ("ACTION_APPLIED", "ERROR")
         or event.severity.value in ("HIGH", "CRITICAL")
     )
@@ -205,12 +219,18 @@ def _is_alert(event: PoCEvent) -> bool:
 def _build_overview(state: DashboardState) -> dict[str, Any]:
     events = _read_events(state.cfg.log_file_path)
     decision_counts = Counter(
-        event.decision.value for event in events if event.decision.value != "NONE"
+        event.decision.value for event in events if event.decision.value not in ("NONE", "CHALLENGE")
     )
     tool_counts = Counter(event.tool_name or event.mcp_method for event in events)
     unique_trace_count = len({str(event.trace_id) for event in events})
     unique_client_count = len({event.client_ip for event in events})
-    alert_count = sum(1 for event in events if _is_alert(event))
+    alert_events = [e for e in events if _is_alert(e)]
+    alert_count = len(alert_events)
+    open_high_alert_count = sum(
+        1 for e in alert_events
+        if e.severity.value in ("HIGH", "CRITICAL") and str(e.request_id) not in state.closed_alerts
+    )
+    security_score = max(0, 100 - 3 * open_high_alert_count)
     latest_event = events[0].model_dump(mode="json", exclude_none=False) if events else None
     return {
         "generated_at": now_iso(),
@@ -218,6 +238,8 @@ def _build_overview(state: DashboardState) -> dict[str, Any]:
         "dashboard_port": state.cfg.dashboard_port,
         "total_events": len(events),
         "alert_count": alert_count,
+        "open_high_alert_count": open_high_alert_count,
+        "security_score": security_score,
         "unique_trace_count": unique_trace_count,
         "unique_client_count": unique_client_count,
         "blocklist_count": len(state.blocklist_entries()),
@@ -962,6 +984,46 @@ def _dashboard_page(state: DashboardState) -> str:
     .pill.sev-medium {{ background: var(--sev-medium-soft); color: var(--sev-medium); }}
     .pill.sev-high {{ background: var(--sev-high-soft); color: var(--sev-high); }}
     .pill.sev-critical {{ background: var(--sev-critical-soft); color: var(--sev-critical); }}
+    .alert-filters {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 14px;
+      align-items: center;
+    }}
+    .filter-group {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }}
+    .filter-group label {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+    }}
+    .filter-select {{
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 28px 6px 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 9px center;
+      min-width: 130px;
+    }}
+    .filter-select:focus {{
+      outline: none;
+      border-color: var(--blue);
+    }}
     #alerts td:first-child,
     #events td:first-child {{
       padding-right: 16px;
@@ -1316,10 +1378,10 @@ def _dashboard_page(state: DashboardState) -> str:
         <div class="eyebrow">Live posture</div>
         <div class="score-wrap">
           <div class="score-stack">
-            <div class="score-ring neutral" id="score-ring" style="--score: 0;">
+            <div class="score-ring neutral" id="score-ring" style="--score: 100;">
               <div class="score-center">
-                <div class="score-overline">Alerts</div>
-                <div class="score-number" id="score-value">0</div>
+                <div class="score-overline">Score</div>
+                <div class="score-number" id="score-value">100</div>
                 <div class="score-max">/ 100</div>
               </div>
             </div>
@@ -1415,32 +1477,53 @@ def _dashboard_page(state: DashboardState) -> str:
             <h2>Recent warnings, blocks, and mitigation activity</h2>
           </div>
         </div>
-        <div class="grid-2">
-          <article class="table-card">
-            <div class="eyebrow">Alert Stream</div>
-            <h3>Newest alerts first</h3>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th style="width: 13%; white-space: nowrap;">Severity</th>
-                    <th style="width: 17%;">Time</th>
-                    <th style="width: 18%;">Event</th>
-                    <th style="width: 15%;">Decision</th>
-                    <th style="width: 37%;">Summary</th>
-                  </tr>
-                </thead>
-                <tbody id="alerts"></tbody>
-              </table>
+        <article class="table-card">
+          <div class="eyebrow">Alert Stream</div>
+          <div class="alert-filters">
+            <div class="filter-group">
+              <label for="filter-time">Time</label>
+              <select id="filter-time" class="filter-select" onchange="setAlertFilter('time', this.value)">
+                <option value="all">All time</option>
+                <option value="1h">Last 1 hour</option>
+                <option value="6h">Last 6 hours</option>
+                <option value="24h">Last 24 hours</option>
+              </select>
             </div>
-          </article>
-
-          <article class="detail-card">
-            <div class="eyebrow">Latest Event</div>
-            <h3>Most recent event details</h3>
-            <div class="detail-stack" id="latest-event"></div>
-          </article>
-        </div>
+            <div class="filter-group">
+              <label for="filter-severity">Severity</label>
+              <select id="filter-severity" class="filter-select" onchange="setAlertFilter('severity', this.value)">
+                <option value="all">All severities</option>
+                <option value="HIGH">High</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="LOW">Low</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label for="filter-status">Status</label>
+              <select id="filter-status" class="filter-select" onchange="setAlertFilter('status', this.value)">
+                <option value="all">All</option>
+                <option value="open">Open</option>
+                <option value="closed">Closed</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 11%; white-space: nowrap;">Severity</th>
+                  <th style="width: 13%;">Time</th>
+                  <th style="width: 19%;">Alert Title</th>
+                  <th style="width: 10%;">Decision</th>
+                  <th style="width: 25%;">Summary</th>
+                  <th style="width: 10%;">Status</th>
+                  <th style="width: 12%;"></th>
+                </tr>
+              </thead>
+              <tbody id="alerts"></tbody>
+            </table>
+          </div>
+        </article>
       </section>
 
       <section class="section" id="events-section">
@@ -1571,42 +1654,42 @@ def _dashboard_page(state: DashboardState) -> str:
     }}
 
     function buildPosture(data) {{
-      const totalEvents = data.total_events || 0;
+      const score = data.security_score ?? 100;
+      const openHigh = data.open_high_alert_count || 0;
       const alertCount = data.alert_count || 0;
-      const pressure = totalEvents ? Math.round((alertCount / totalEvents) * 100) : 0;
-      if (!totalEvents) {{
+      if (!data.total_events) {{
         return {{
           label: "Waiting for traffic",
           tone: "neutral",
-          value: 0,
-          summary: "No proxy events have been captured yet.",
-          detail: "As traffic arrives, this score reflects how much of the stream is becoming warnings, challenges, or blocks.",
+          value: 100,
+          summary: "No alerts yet — score starts at 100.",
+          detail: "Each unclosed high-severity alert deducts 3 points. The score floors at 0.",
         }};
       }}
-      if (pressure >= 45) {{
+      if (score >= 85) {{
         return {{
-          label: "High alert pressure",
-          tone: "high",
-          value: pressure,
-          summary: `${{alertCount}} of ${{totalEvents}} events are currently alerting.`,
-          detail: "A large share of recent activity is being flagged, denied, challenged, or treated as an error.",
+          label: "Secure",
+          tone: "good",
+          value: score,
+          summary: `${{openHigh}} open high-severity alert${{openHigh === 1 ? "" : "s"}} — score ${{score}}/100.`,
+          detail: "No significant threats outstanding. Close alerts as you review them to keep the score current.",
         }};
       }}
-      if (pressure >= 20) {{
+      if (score >= 60) {{
         return {{
-          label: "Moderate alert pressure",
+          label: "At Risk",
           tone: "moderate",
-          value: pressure,
-          summary: `${{alertCount}} of ${{totalEvents}} events need attention.`,
-          detail: "The proxy is seeing a noticeable amount of suspicious or policy-breaking traffic, but it is not dominating the stream.",
+          value: score,
+          summary: `${{openHigh}} open high-severity alert${{openHigh === 1 ? "" : "s"}} — score ${{score}}/100.`,
+          detail: "Multiple unresolved high-severity alerts are dragging the score down. Review and close alerts you have handled.",
         }};
       }}
       return {{
-        label: "Low alert pressure",
-        tone: "good",
-        value: pressure,
-        summary: `${{alertCount}} of ${{totalEvents}} events are alerting.`,
-        detail: "Most recent activity appears routine, with only a small portion of events producing warnings or enforcement actions.",
+        label: "Under Attack",
+        tone: "high",
+        value: score,
+        summary: `${{openHigh}} open high-severity alert${{openHigh === 1 ? "" : "s"}} — score ${{score}}/100.`,
+        detail: `${{alertCount}} total alerts, ${{openHigh}} unclosed high-severity (${{openHigh}} × −3 pts). Close resolved alerts to recover the score.`,
       }};
     }}
 
@@ -1666,16 +1749,16 @@ def _dashboard_page(state: DashboardState) -> str:
     function renderSummaryMetrics(data) {{
       const decisions = data.decision_counts || {{}};
       document.getElementById("summary-metrics").innerHTML = [
-        metricCard("Total events", data.total_events || 0, "Structured events currently loaded from the proxy log.", ""),
-        metricCard("Active alerts", data.alert_count || 0, "Warnings, errors, denies, challenges, and mitigation actions.", "alert"),
+        metricCard("Total alerts", data.alert_count || 0, "Warnings, errors, denies, and mitigation actions.", "alert"),
+        metricCard("Open high alerts", data.open_high_alert_count || 0, "Unclosed high-severity alerts — each deducts 3 points from the score.", "alert"),
         metricCard("Allowed requests", decisions.ALLOW || 0, "Traffic that passed through to the upstream server.", "allow"),
-        metricCard("Blocked sources", data.blocklist_count || 0, "IPs that are currently on the in-memory blocklist.", "challenge"),
+        metricCard("Blocked sources", data.blocklist_count || 0, "IPs that are currently on the in-memory blocklist.", "deny"),
       ].join("");
     }}
 
     function renderSummaryBullets(data, scenarios, blocklist) {{
       const decisions = data.decision_counts || {{}};
-      const decisionTotal = (decisions.ALLOW || 0) + (decisions.DENY || 0) + (decisions.CHALLENGE || 0);
+      const decisionTotal = (decisions.ALLOW || 0) + (decisions.DENY || 0);
       const topTool = (data.top_tools || [])[0];
       const latestRun = (scenarios.runs || [])[0];
       const bullets = [];
@@ -1687,7 +1770,7 @@ def _dashboard_page(state: DashboardState) -> str:
       }}
 
       if (decisionTotal) {{
-        bullets.push(`${{decisions.DENY || 0}} requests were denied and ${{decisions.CHALLENGE || 0}} were challenged, while ${{decisions.ALLOW || 0}} were allowed upstream.`);
+        bullets.push(`${{decisions.DENY || 0}} requests were denied and ${{decisions.ALLOW || 0}} were allowed through to the upstream server.`);
       }} else {{
         bullets.push("No final allow, deny, or challenge decisions have been observed yet.");
       }}
@@ -1721,7 +1804,6 @@ def _dashboard_page(state: DashboardState) -> str:
       const rows = [
         {{ label: "Allowed", key: "ALLOW", css: "allow" }},
         {{ label: "Denied", key: "DENY", css: "deny" }},
-        {{ label: "Challenged", key: "CHALLENGE", css: "challenge" }},
       ];
       const total = rows.reduce((sum, row) => sum + (decisions[row.key] || 0), 0);
       document.getElementById("decision-breakdown").innerHTML = rows.map((row) => {{
@@ -1842,27 +1924,70 @@ def _dashboard_page(state: DashboardState) -> str:
       `).join("");
     }}
 
+    const ALERT_TITLES = {{
+      "filesystem.path_outside_allowed_base": "File Access Outside Allowed Directory",
+      "filesystem.path_traversal":            "Directory Traversal Attempt",
+      "filesystem.missing_required_args":     "Missing Required Tool Arguments",
+      "identity.missing_session_id":          "Request Missing Session Identity",
+      "identity.invalid_token_format":        "Invalid Authentication Token",
+      "abuse.high_request_rate":              "Abnormally High Request Rate",
+      "abuse.oversized_payload":              "Oversized Request Payload",
+      "BLOCKLIST_ACTIVE":                     "Request Blocked — IP on Blocklist",
+      "UNSAFE_FILE_ACCESS":                   "Unsafe File Access Attempt",
+      "SQL_INJECTION":                        "SQL Injection Pattern Detected",
+      "DISALLOWED_TOOL":                      "Disallowed Tool Called",
+      "INVALID_ARGUMENTS":                    "Invalid or Missing Tool Arguments",
+      "R1_DISALLOWED_TOOL":                   "Disallowed Tool Called",
+      "R2_UNSAFE_PARAMETER":                  "Unsafe Parameter Detected",
+      "R3_INVALID_ARGUMENTS":                 "Invalid Tool Arguments",
+      "ACTION_APPLIED":                       "Mitigation Action Applied",
+      "ERROR":                                "Internal Proxy Error",
+    }};
+
+    function alertTitle(event) {{
+      const rc = event.reason_code || "";
+      const et = event.event_type  || "";
+      return ALERT_TITLES[rc] || ALERT_TITLES[et] || humanizeConstant(rc || et);
+    }}
+
+    async function toggleAlertStatus(alertId, currentStatus) {{
+      const next = currentStatus === "open" ? "close" : "open";
+      await api(`/api/alerts/${{encodeURIComponent(alertId)}}/${{next}}`, {{ method: "POST" }});
+      await refreshDashboard();
+    }}
+
+    function statusBadge(status) {{
+      const closed = status === "closed";
+      return `<span class="pill ${{closed ? "allow" : "deny"}}" style="font-size:0.72rem;">${{closed ? "Closed" : "Open"}}</span>`;
+    }}
+
     function renderAlerts(rows) {{
       const target = document.getElementById("alerts");
       if (!rows.length) {{
-        target.innerHTML = `<tr><td colspan="5" class="empty-state" style="background: transparent;">No alerts yet.</td></tr>`;
+        target.innerHTML = `<tr><td colspan="7" class="empty-state" style="background: transparent;">No alerts yet.</td></tr>`;
         return;
       }}
-      target.innerHTML = rows.map((event) => `
-        <tr>
+      target.innerHTML = rows.map((event) => {{
+        const isClosed = event.status === "closed";
+        const alertId = event.alert_id || event.request_id || "";
+        return `
+        <tr style="${{isClosed ? "opacity:0.55;" : ""}}">
           <td>${{severityBadge(event.severity)}}</td>
           <td>${{escapeHtml(formatTimestamp(event.timestamp))}}</td>
           <td>
-            <div class="table-cell-title">${{escapeHtml(humanizeConstant(event.event_type))}}</div>
-            <div class="table-cell-copy">${{escapeHtml(event.level || "INFO")}}</div>
+            <div class="table-cell-title">${{escapeHtml(alertTitle(event))}}</div>
+            <div class="table-cell-copy">${{escapeHtml(event.tool_name || event.mcp_method || "—")}}</div>
           </td>
           <td>${{decisionPill(event.decision)}}</td>
           <td>
-            <div class="table-cell-title">${{escapeHtml(event.reason_code || "No reason code")}}</div>
-            <div class="table-cell-copy">${{escapeHtml(event.reason || "No reason details available.")}}</div>
+            <div class="table-cell-copy">${{escapeHtml(event.reason || "—")}}</div>
           </td>
-        </tr>
-      `).join("");
+          <td>${{statusBadge(event.status || "open")}}</td>
+          <td>
+            <button class="btn btn-${{isClosed ? "primary" : "danger"}}" style="padding:4px 10px;font-size:0.78rem;" onclick="toggleAlertStatus('${{escapeHtml(alertId)}}','${{event.status || "open"}}')">${{isClosed ? "Reopen" : "Close"}}</button>
+          </td>
+        </tr>`;
+      }}).join("");
     }}
 
     function renderLatestEvent(event) {{
@@ -1985,6 +2110,30 @@ def _dashboard_page(state: DashboardState) -> str:
       }}).join("");
     }}
 
+    let _allAlerts = [];
+    const _alertFilter = {{ time: "all", severity: "all", status: "all" }};
+
+    function setAlertFilter(type, value) {{
+      _alertFilter[type] = value;
+      applyAlertFilters();
+    }}
+
+    function applyAlertFilters() {{
+      let rows = _allAlerts;
+      if (_alertFilter.time !== "all") {{
+        const hours = parseInt(_alertFilter.time, 10);
+        const cutoff = new Date(Date.now() - hours * 3600 * 1000);
+        rows = rows.filter((e) => new Date(e.timestamp) >= cutoff);
+      }}
+      if (_alertFilter.severity !== "all") {{
+        rows = rows.filter((e) => (e.severity || "").toUpperCase() === _alertFilter.severity);
+      }}
+      if (_alertFilter.status !== "all") {{
+        rows = rows.filter((e) => (e.status || "open") === _alertFilter.status);
+      }}
+      renderAlerts(rows);
+    }}
+
     async function refreshDashboard() {{
       document.getElementById("status").textContent = "Refreshing live data...";
       try {{
@@ -2008,8 +2157,8 @@ def _dashboard_page(state: DashboardState) -> str:
         renderScenarios((scenarios && scenarios.runs) || []);
         renderTopTools(overview.top_tools || []);
         renderBlocklist((blocklist && blocklist.entries) || []);
-        renderAlerts((alerts && alerts.alerts) || []);
-        renderLatestEvent(overview.latest_event || null);
+        _allAlerts = (alerts && alerts.alerts) || [];
+        applyAlertFilters();
         renderEvents((events && events.events) || []);
         renderTimeline((timeline && timeline.traces) || []);
         document.getElementById("status").textContent = "Last updated " + new Date().toLocaleTimeString();
@@ -2771,7 +2920,25 @@ def create_dashboard_app(state: DashboardState) -> FastAPI:
         _require_auth(request, state)
         alerts_only = [event for event in _read_events(state.cfg.log_file_path) if _is_alert(event)]
         alerts_only.sort(key=_alert_priority_key)
-        return JSONResponse({"alerts": _serialize_events(alerts_only[:max(1, min(limit, 200))])})
+        rows = []
+        for event in alerts_only[:max(1, min(limit, 200))]:
+            d = event.model_dump(mode="json", exclude_none=False)
+            d["alert_id"] = str(event.request_id)
+            d["status"] = "closed" if str(event.request_id) in state.closed_alerts else "open"
+            rows.append(d)
+        return JSONResponse({"alerts": rows})
+
+    @app.post("/api/alerts/{alert_id}/close")
+    async def close_alert(alert_id: str, request: Request) -> JSONResponse:
+        _require_auth(request, state)
+        state.close_alert(alert_id)
+        return JSONResponse({"alert_id": alert_id, "status": "closed"})
+
+    @app.post("/api/alerts/{alert_id}/open")
+    async def reopen_alert(alert_id: str, request: Request) -> JSONResponse:
+        _require_auth(request, state)
+        state.reopen_alert(alert_id)
+        return JSONResponse({"alert_id": alert_id, "status": "open"})
 
     @app.get("/api/timeline")
     async def timeline(request: Request, max_traces: int = 6) -> JSONResponse:
