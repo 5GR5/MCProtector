@@ -231,12 +231,348 @@ def handle_query_db(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle_filesystem_delete(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle filesystem.delete tool invocation.
+    Simulates file deletion (dangerous operation for security testing).
+    """
+    path = arguments.get("path")
+
+    if not path:
+        return {
+            "ok": False,
+            "error": {
+                "code": "MISSING_ARGUMENT",
+                "message": "Required argument 'path' is missing"
+            }
+        }
+
+    allowed, error_msg = _is_path_allowed(path)
+    if not allowed:
+        return {
+            "ok": False,
+            "error": {
+                "code": "ACCESS_DENIED",
+                "message": error_msg
+            }
+        }
+
+    return {
+        "ok": True,
+        "result": {
+            "path": path,
+            "message": f"Successfully deleted {path}"
+        }
+    }
+
+
+def handle_filesystem_list(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle filesystem.list tool invocation.
+    Lists directory contents from simulated filesystem.
+    """
+    path = arguments.get("path", "/")
+
+    allowed, error_msg = _is_path_allowed(path)
+    if not allowed:
+        return {
+            "ok": False,
+            "error": {
+                "code": "ACCESS_DENIED",
+                "message": error_msg
+            }
+        }
+
+    # Find files that match the directory
+    entries = []
+    for file_path in SIMULATED_FILESYSTEM.keys():
+        if file_path.startswith(path.rstrip("/") + "/"):
+            relative = file_path[len(path.rstrip("/")) + 1:]
+            # Get first component (immediate child)
+            first_part = relative.split("/")[0]
+            if first_part not in entries:
+                entries.append(first_part)
+
+    return {
+        "ok": True,
+        "result": {
+            "path": path,
+            "entries": entries,
+            "count": len(entries)
+        }
+    }
+
+
+def handle_shell_execute(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle shell.execute tool invocation.
+    DANGEROUS: Simulates shell command execution for security testing.
+    """
+    command = arguments.get("command")
+
+    if not command:
+        return {
+            "ok": False,
+            "error": {
+                "code": "MISSING_ARGUMENT",
+                "message": "Required argument 'command' is missing"
+            }
+        }
+
+    # Stubbed responses for common commands
+    stubbed = {
+        "whoami": "mcprotector-user",
+        "pwd": "/home/mcprotector",
+        "id": "uid=1000(mcprotector-user) gid=1000(mcprotector) groups=1000(mcprotector)",
+        "uname -a": "Linux mcprotector-host 5.15.0 #1 SMP x86_64 GNU/Linux",
+        "hostname": "mcprotector-host",
+        "date": "Sat May 24 12:00:00 UTC 2026",
+        "ls": "config.json\ndata\nlogs\nREADME.md",
+        "env": "PATH=/usr/local/bin:/usr/bin\nHOME=/home/mcprotector\nUSER=mcprotector-user",
+    }
+
+    if command in stubbed:
+        return {
+            "ok": True,
+            "result": {
+                "command": command,
+                "exit_code": 0,
+                "stdout": stubbed[command],
+                "stderr": ""
+            }
+        }
+
+    return {
+        "ok": True,
+        "result": {
+            "command": command,
+            "exit_code": 0,
+            "stdout": f"[simulated output for: {command}]",
+            "stderr": ""
+        }
+    }
+
+
+def handle_net_http_post(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle net.http_post tool invocation.
+    Simulates HTTP POST requests (potential data exfiltration).
+    """
+    url = arguments.get("url")
+    body = arguments.get("body", {})
+
+    if not url:
+        return {
+            "ok": False,
+            "error": {
+                "code": "MISSING_ARGUMENT",
+                "message": "Required argument 'url' is missing"
+            }
+        }
+
+    return {
+        "ok": True,
+        "result": {
+            "url": url,
+            "method": "POST",
+            "status_code": 200,
+            "body_sent_bytes": len(str(body)),
+            "response": {"message": "Stubbed POST response", "accepted": True}
+        }
+    }
+
+
+def handle_email_send(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle email.send tool invocation.
+    Simulates sending email (data exfiltration vector).
+    """
+    to = arguments.get("to")
+    subject = arguments.get("subject", "")
+    body = arguments.get("body", "")
+
+    if not to:
+        return {
+            "ok": False,
+            "error": {
+                "code": "MISSING_ARGUMENT",
+                "message": "Required argument 'to' is missing"
+            }
+        }
+
+    return {
+        "ok": True,
+        "result": {
+            "to": to,
+            "subject": subject,
+            "body_length": len(body),
+            "message_id": "msg-12345-simulated",
+            "status": "sent"
+        }
+    }
+
+
+def handle_secrets_get(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle secrets.get tool invocation.
+    Simulates fetching secrets/credentials (sensitive operation).
+    """
+    secret_name = arguments.get("name")
+
+    if not secret_name:
+        return {
+            "ok": False,
+            "error": {
+                "code": "MISSING_ARGUMENT",
+                "message": "Required argument 'name' is missing"
+            }
+        }
+
+    # Simulated secrets store
+    secrets = {
+        "api_key": "sk-demo-xxxx-redacted",
+        "db_password": "***REDACTED***",
+        "jwt_secret": "***REDACTED***",
+    }
+
+    if secret_name in secrets:
+        return {
+            "ok": True,
+            "result": {
+                "name": secret_name,
+                "value": secrets[secret_name],
+                "version": "v1"
+            }
+        }
+
+    return {
+        "ok": False,
+        "error": {
+            "code": "SECRET_NOT_FOUND",
+            "message": f"Secret '{secret_name}' not found"
+        }
+    }
+
+
+def handle_process_list(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle process.list tool invocation.
+    Lists running processes (reconnaissance).
+    """
+    return {
+        "ok": True,
+        "result": {
+            "processes": [
+                {"pid": 1, "name": "systemd", "user": "root"},
+                {"pid": 100, "name": "python3", "user": "mcprotector-user"},
+                {"pid": 101, "name": "uvicorn", "user": "mcprotector-user"},
+                {"pid": 102, "name": "node", "user": "mcprotector-user"},
+            ],
+            "count": 4
+        }
+    }
+
+
+def handle_env_get(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle env.get tool invocation.
+    Gets environment variables (potential credential exposure).
+    """
+    var_name = arguments.get("name")
+
+    env_vars = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/home/mcprotector",
+        "USER": "mcprotector-user",
+        "AWS_REGION": "us-east-1",
+        "DATABASE_URL": "postgres://***:***@localhost/db",
+    }
+
+    if var_name:
+        if var_name in env_vars:
+            return {
+                "ok": True,
+                "result": {"name": var_name, "value": env_vars[var_name]}
+            }
+        return {
+            "ok": False,
+            "error": {"code": "NOT_FOUND", "message": f"Variable '{var_name}' not set"}
+        }
+
+    # Return all if no name specified
+    return {
+        "ok": True,
+        "result": {"variables": env_vars, "count": len(env_vars)}
+    }
+
+
+def handle_crypto_encode(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle crypto.encode tool invocation.
+    Base64 encodes data (obfuscation for exfiltration).
+    """
+    import base64
+    data = arguments.get("data", "")
+
+    if not data:
+        return {
+            "ok": False,
+            "error": {"code": "MISSING_ARGUMENT", "message": "Required argument 'data' is missing"}
+        }
+
+    encoded = base64.b64encode(data.encode()).decode()
+    return {
+        "ok": True,
+        "result": {
+            "original_length": len(data),
+            "encoded": encoded,
+            "encoding": "base64"
+        }
+    }
+
+
+def handle_net_dns_lookup(arguments: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle net.dns_lookup tool invocation.
+    Simulates DNS lookups (reconnaissance).
+    """
+    hostname = arguments.get("hostname")
+
+    if not hostname:
+        return {
+            "ok": False,
+            "error": {"code": "MISSING_ARGUMENT", "message": "Required argument 'hostname' is missing"}
+        }
+
+    # Stubbed DNS responses
+    dns_records = {
+        "example.com": {"A": ["93.184.216.34"], "AAAA": ["2606:2800:220:1:248:1893:25c8:1946"]},
+        "api.example.com": {"A": ["93.184.216.35"], "CNAME": ["api-lb.example.com"]},
+        "localhost": {"A": ["127.0.0.1"]},
+    }
+
+    if hostname in dns_records:
+        return {"ok": True, "result": {"hostname": hostname, "records": dns_records[hostname]}}
+
+    return {"ok": True, "result": {"hostname": hostname, "records": {"A": ["10.0.0.1"]}}}
+
+
 # Tool handler registry
 TOOL_HANDLERS = {
     "filesystem.read": handle_filesystem_read,
     "filesystem.write": handle_filesystem_write,
+    "filesystem.delete": handle_filesystem_delete,
+    "filesystem.list": handle_filesystem_list,
     "net.http_get": handle_net_http_get,
-    "query_db": handle_query_db
+    "net.http_post": handle_net_http_post,
+    "net.dns_lookup": handle_net_dns_lookup,
+    "query_db": handle_query_db,
+    "shell.execute": handle_shell_execute,
+    "email.send": handle_email_send,
+    "secrets.get": handle_secrets_get,
+    "process.list": handle_process_list,
+    "env.get": handle_env_get,
+    "crypto.encode": handle_crypto_encode,
 }
 
 

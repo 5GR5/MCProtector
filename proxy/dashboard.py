@@ -80,7 +80,7 @@ TOOL_TEST_CASES: dict[str, dict[str, Any]] = {
     },
     "query_db": {
         "name": "query_db",
-        "description": "Run a deterministic read-only query against a simulated SQL database.",
+        "description": "Run a read-only SQL query against a simulated database.",
         "allowed": {
             "title": "Allowed database query",
             "summary": "Runs a predefined read-only query against the simulated users table.",
@@ -91,6 +91,118 @@ TOOL_TEST_CASES: dict[str, dict[str, Any]] = {
             "title": "Blocked SQL injection",
             "summary": "Attempts a tautology-based SQL injection payload in the query string.",
             "arguments": {"query": "SELECT id, username, role FROM users WHERE username = 'admin' OR 1=1 --"},
+            "expected_decision": "DENY",
+        },
+    },
+    "filesystem.delete": {
+        "name": "filesystem.delete",
+        "description": "Delete a file from the simulated filesystem.",
+        "allowed": {
+            "title": "Allowed delete",
+            "summary": "Deletes a file inside the approved /project/data directory.",
+            "arguments": {"path": "/project/data/temp-file.txt"},
+            "expected_decision": "ALLOW",
+        },
+        "disallowed": {
+            "title": "Blocked unsafe delete",
+            "summary": "Attempts to delete /etc/passwd, which is outside the allowed base.",
+            "arguments": {"path": "/etc/passwd"},
+            "expected_decision": "DENY",
+        },
+    },
+    "filesystem.list": {
+        "name": "filesystem.list",
+        "description": "List contents of a directory.",
+        "allowed": {
+            "title": "Allowed directory listing",
+            "summary": "Lists files in the approved /project/data directory.",
+            "arguments": {"path": "/project/data"},
+            "expected_decision": "ALLOW",
+        },
+        "disallowed": {
+            "title": "Blocked path traversal",
+            "summary": "Attempts directory traversal using ../ pattern.",
+            "arguments": {"path": "/project/data/../../../etc"},
+            "expected_decision": "DENY",
+        },
+    },
+    "net.http_post": {
+        "name": "net.http_post",
+        "description": "Send data via HTTP POST request.",
+        "allowed": {
+            "title": "Allowed HTTP POST",
+            "summary": "Posts data to a legitimate API endpoint.",
+            "arguments": {"url": "https://api.example.com/data", "body": {"action": "update", "value": 42}},
+            "expected_decision": "ALLOW",
+        },
+        "disallowed": {
+            "title": "Blocked SQL injection in URL",
+            "summary": "POST request with DROP TABLE SQL injection pattern.",
+            "arguments": {"url": "https://api.example.com/users; DROP TABLE users--"},
+            "expected_decision": "DENY",
+        },
+    },
+    "shell.execute": {
+        "name": "shell.execute",
+        "description": "Execute shell commands on the server.",
+        "allowed": {
+            "title": "Allowed safe command",
+            "summary": "Runs a harmless whoami command.",
+            "arguments": {"command": "whoami"},
+            "expected_decision": "ALLOW",
+        },
+        "disallowed": {
+            "title": "Blocked SQL injection in command",
+            "summary": "Command contains SQL injection pattern.",
+            "arguments": {"command": "echo 'test' OR 1=1 --"},
+            "expected_decision": "DENY",
+        },
+    },
+    "secrets.get": {
+        "name": "secrets.get",
+        "description": "Retrieve secrets and credentials by name.",
+        "allowed": {
+            "title": "Allowed secret access",
+            "summary": "Retrieves an authorized API key.",
+            "arguments": {"name": "api_key"},
+            "expected_decision": "ALLOW",
+        },
+        "disallowed": {
+            "title": "Blocked SQL injection in name",
+            "summary": "Secret name contains UNION SELECT injection.",
+            "arguments": {"name": "api_key' UNION SELECT password FROM users--"},
+            "expected_decision": "DENY",
+        },
+    },
+    "email.send": {
+        "name": "email.send",
+        "description": "Send email messages.",
+        "allowed": {
+            "title": "Allowed email",
+            "summary": "Sends email to a legitimate address.",
+            "arguments": {"to": "admin@company.com", "subject": "Report", "body": "Weekly report."},
+            "expected_decision": "ALLOW",
+        },
+        "disallowed": {
+            "title": "Blocked SQL injection in recipient",
+            "summary": "Email recipient contains SQL injection pattern.",
+            "arguments": {"to": "admin@company.com' OR '1'='1", "subject": "Test", "body": "Test"},
+            "expected_decision": "DENY",
+        },
+    },
+    "crypto.encode": {
+        "name": "crypto.encode",
+        "description": "Base64 encode data.",
+        "allowed": {
+            "title": "Allowed encoding",
+            "summary": "Encodes a simple message.",
+            "arguments": {"data": "Hello World"},
+            "expected_decision": "ALLOW",
+        },
+        "disallowed": {
+            "title": "Blocked large payload",
+            "summary": "Payload exceeds 4KB threshold (triggers large_payload rule).",
+            "arguments": {"data": "A" * 5000},
             "expected_decision": "DENY",
         },
     },
@@ -232,6 +344,11 @@ def _build_overview(state: DashboardState) -> dict[str, Any]:
     )
     security_score = max(0, 100 - 3 * open_high_alert_count)
     latest_event = events[0].model_dump(mode="json", exclude_none=False) if events else None
+
+    # Track most common alert type by reason_code
+    alert_reason_counts = Counter(e.reason_code for e in alert_events if e.reason_code)
+    top_alert = alert_reason_counts.most_common(1)[0] if alert_reason_counts else None
+
     return {
         "generated_at": now_iso(),
         "proxy_url": state.proxy_url,
@@ -248,6 +365,7 @@ def _build_overview(state: DashboardState) -> dict[str, Any]:
             {"name": name, "count": count}
             for name, count in tool_counts.most_common(5)
         ],
+        "top_alert": {"reason_code": top_alert[0], "count": top_alert[1]} if top_alert else None,
         "latest_event": latest_event,
     }
 
@@ -1769,10 +1887,11 @@ def _dashboard_page(state: DashboardState) -> str:
         bullets.push(`${{data.total_events}} events have been recorded, with ${{data.alert_count || 0}} currently counted as alerts.`);
       }}
 
-      if (decisionTotal) {{
-        bullets.push(`${{decisions.DENY || 0}} requests were denied and ${{decisions.ALLOW || 0}} were allowed through to the upstream server.`);
+      const topAlert = data.top_alert;
+      if (topAlert) {{
+        bullets.push(`The most common alert is "${{topAlert.reason_code}}" with ${{topAlert.count}} occurrence${{topAlert.count === 1 ? "" : "s"}}.`);
       }} else {{
-        bullets.push("No final allow, deny, or challenge decisions have been observed yet.");
+        bullets.push("No alerts have been triggered yet.");
       }}
 
       if (topTool) {{

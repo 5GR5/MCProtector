@@ -22,12 +22,18 @@ settings:
   tool_schemas:
     filesystem.read: ["path"]
     filesystem.write: ["path", "content"]
+    filesystem.delete: ["path"]
+    filesystem.list: ["path"]
     net.http_get: ["url"]
-    read_file: ["path"]
-    write_file: ["path", "content"]
-    list_directory: ["path"]
-    delete_file: ["path"]
+    net.http_post: ["url"]
+    net.dns_lookup: ["hostname"]
     query_db: ["query"]
+    shell.execute: ["command"]
+    email.send: ["to"]
+    secrets.get: ["name"]
+    process.list: []
+    env.get: []
+    crypto.encode: ["data"]
 
   large_payload_threshold_bytes: 4096
   rapid_repeat_limit: 5
