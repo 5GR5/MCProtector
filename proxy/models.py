@@ -51,5 +51,6 @@ class RiskEvaluation(BaseModel):
     risk_score: float
     risk_threshold: float
     model_reason_summary: str
+    model_reason_details: list | None = None
     reason_code: str = "MODEL_EVALUATED"
     reason: str = "Model evaluated"

@@ -3,6 +3,7 @@ import time
 from typing import Optional
 from proxy.models import NormalizedRequest, RuleEvaluation, RiskEvaluation
 from .loader import DetectionEngine
+from detection.risk.scorer import get_default_scorer
 
 _ENGINE: Optional[DetectionEngine] = None
 
@@ -59,33 +60,8 @@ def evaluate_rules(req: NormalizedRequest) -> RuleEvaluation:
 def evaluate_risk(req: NormalizedRequest, threshold: float) -> RiskEvaluation:
     try:
         engine = get_engine()
-        score = 0.10
-        reasons = []
-        args = req.tool_args if isinstance(req.tool_args, dict) else {}
-        path = args.get("path")
-        allowed_base = str(engine.context.settings.get("allowed_base", "/project/data"))
-        if path and not str(path).startswith(allowed_base):
-            score += 0.40
-            reasons.append("path outside allowed base (+0.40)")
-        if req.payload_size_bytes > int(engine.context.settings.get("large_payload_threshold_bytes", 4096)):
-            score += 0.10
-            reasons.append("large payload (+0.10)")
-        if req.tool_name and req.tool_name.startswith("filesystem."):
-            score += 0.10
-            reasons.append("filesystem tool (+0.10)")
-        if req.mcp_method == "tools/call" and not req.auth_token:
-            score += 0.10
-            reasons.append("no auth token (+0.10)")
-        risk_score = round(min(score, 1.0), 4)
-        return RiskEvaluation(
-            model_name="heuristic-risk-scorer-v2",
-            model_version="2.0",
-            risk_score=risk_score,
-            risk_threshold=threshold,
-            model_reason_summary="; ".join(reasons) if reasons else "no suspicious indicators",
-            reason_code="MODEL_SCORE",
-            reason="Risk score computed.",
-        )
+        scorer = get_default_scorer(engine)
+        return scorer.score(req, engine, threshold)
     except Exception as exc:
         return RiskEvaluation(
             model_name="heuristic-risk-scorer-v2",
@@ -93,6 +69,7 @@ def evaluate_risk(req: NormalizedRequest, threshold: float) -> RiskEvaluation:
             risk_score=0.0,
             risk_threshold=threshold,
             model_reason_summary=f"Scorer error: {type(exc).__name__}: {exc}",
+            model_reason_details=None,
             reason_code="DETECTION_ERROR",
             reason="Risk scorer failed — defaulting to 0.0.",
         )

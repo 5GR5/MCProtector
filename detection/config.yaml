@@ -34,3 +34,10 @@ settings:
   rapid_repeat_window_sec: 15
   token_multi_ip_window_sec: 60
   token_multi_ip_max_ips: 1
+  # Heuristic scorer feature weights (overrides defaults in code)
+  risk_weights:
+    base_score: 0.10
+    path_outside_base: 0.40
+    large_payload: 0.10
+    filesystem_tool: 0.10
+    missing_auth_token: 0.10
