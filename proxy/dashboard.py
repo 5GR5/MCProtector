@@ -36,12 +36,12 @@ TOOL_TEST_CASES: dict[str, dict[str, Any]] = {
             "arguments": {"path": "/project/data/config.json"},
             "expected_decision": "ALLOW",
         },
-        "disallowed": {
-            "title": "Blocked unsafe read",
-            "summary": "Attempts to read /etc/passwd, which resolves outside the allowed base.",
-            "arguments": {"path": "/etc/passwd"},
-            "expected_decision": "DENY",
-        },
+      "disallowed": {
+        "title": "Blocked secret read",
+        "summary": "Attempts to read a demonstration secrets file inside the project data directory.",
+        "arguments": {"path": "/project/data/secrets/passwords.txt"},
+        "expected_decision": "DENY",
+      },
     },
     "filesystem.write": {
         "name": "filesystem.write",
@@ -218,6 +218,7 @@ class DashboardState:
     scenario_lock: threading.Lock = field(default_factory=threading.Lock)
     closed_alerts: set[str] = field(default_factory=set)
     closed_alerts_lock: threading.Lock = field(default_factory=threading.Lock)
+    product_enabled: bool = True
 
     def record_scenario(self, result: dict[str, Any]) -> None:
         self.scenario_history.insert(0, result)
@@ -239,6 +240,12 @@ class DashboardState:
                 continue
             entries.append({"ip": ip, "remaining_sec": remaining})
         return entries
+
+    def set_product_enabled(self, enabled: bool) -> None:
+        self.product_enabled = bool(enabled)
+
+    def is_product_enabled(self) -> bool:
+        return bool(self.product_enabled)
 
 
 @dataclass
@@ -2696,7 +2703,13 @@ def _tests_page(state: DashboardState) -> str:
       <div class="eyebrow">Real Proxy Test Flow</div>
       <h1>Run allowed and blocked checks for each MCP tool.</h1>
       <p>Every test on this page sends a real <code>tools/call</code> request to <code>{state.proxy_url}</code>, then reads the matching trace from the proxy log so you can inspect the rule evaluation, final decision, mitigation action, and upstream response.</p>
-      <div class="status" id="status">Loading tool tests...</div>
+      <div style="display:flex;gap:12px;align-items:center;">
+        <div class="status" id="status">Loading tool tests...</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn" id="product-toggle" type="button" onclick="toggleProduct()">Toggle Protection</button>
+          <span id="product-state" class="pill neutral">Unknown</span>
+        </div>
+      </div>
     </section>
 
     <main class="layout">
@@ -2872,6 +2885,34 @@ def _tests_page(state: DashboardState) -> str:
       }}
     }}
 
+    async function getProductState() {{
+      try {{
+        const resp = await api('/api/product');
+        const enabled = resp && resp.enabled;
+        const el = document.getElementById('product-state');
+        el.textContent = enabled ? 'Protection: ON' : 'Protection: OFF';
+        el.className = 'pill ' + (enabled ? 'pass' : 'fail');
+        window._product_enabled = !!enabled;
+      }} catch (err) {{
+        console.warn('Could not fetch product state', err);
+      }}
+    }}
+
+    async function toggleProduct() {{
+      const currently = !!window._product_enabled;
+      try {{
+        const resp = await api('/api/product', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ enabled: !currently }}),
+        }});
+        window._product_enabled = !!resp.enabled;
+        getProductState();
+      }} catch (err) {{
+        alert('Failed to toggle product: ' + (err.message || err));
+      }}
+    }}
+
     function renderResult(result) {{
       const badge = document.getElementById("latest-badge");
       badge.className = `pill ${{result.actual_decision === "DENY" ? "deny" : result.actual_decision === "ALLOW" ? "allow" : "warn"}}`;
@@ -2963,6 +3004,7 @@ def _tests_page(state: DashboardState) -> str:
 
     renderHistory();
     loadDefinitions();
+    getProductState();
   </script>
 </body>
 </html>"""
@@ -3073,6 +3115,21 @@ def create_dashboard_app(state: DashboardState) -> FastAPI:
     async def scenarios(request: Request) -> JSONResponse:
         _require_auth(request, state)
         return JSONResponse({"runs": state.scenario_history})
+
+    @app.get("/api/product")
+    async def product_status(request: Request) -> JSONResponse:
+      _require_auth(request, state)
+      return JSONResponse({"enabled": state.is_product_enabled()})
+
+    @app.post("/api/product")
+    async def set_product(request: Request) -> JSONResponse:
+      _require_auth(request, state)
+      payload = await request.json()
+      enabled = payload.get("enabled")
+      if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="'enabled' must be a boolean")
+      state.set_product_enabled(enabled)
+      return JSONResponse({"enabled": state.is_product_enabled()})
 
     @app.get("/api/tests/definitions")
     async def test_definitions(request: Request) -> JSONResponse:

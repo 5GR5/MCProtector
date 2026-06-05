@@ -56,7 +56,9 @@ async def health() -> dict[str, object]:
 @app.post("/mcp/message")
 async def mcp_message(request: Request) -> JSONResponse:
     body = await request.json()
-    status, data, headers_out = await handle_mcp_message(request, body, cfg, emitter, blocklist)
+    # Respect runtime dashboard toggle (if present) to enable/disable protection for demos
+    product_enabled = getattr(dashboard_state, "product_enabled", True)
+    status, data, headers_out = await handle_mcp_message(request, body, cfg, emitter, blocklist, product_enabled=product_enabled)
     return JSONResponse(status_code=status, content=data, headers=headers_out)
 
 

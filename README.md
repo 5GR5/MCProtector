@@ -381,3 +381,37 @@ python -m mcp_client.client --server http://127.0.0.1:8080/mcp/message scenario 
 
 python -m mcp_client.client --server http://127.0.0.1:8080/mcp/message scenario denied
 ```
+
+---
+
+## Presentation Demo (Secret-file scenario)
+
+This quick flow demonstrates reading a sensitive file (`/project/data/secrets/passwords.txt`) while the product is ON (should be blocked) and then OFF (allowed).
+
+1. Start the MCP server (test backend):
+
+```bash
+python -m mcp_server.server --port 9000
+```
+
+2. Start the proxy and dashboard:
+
+```bash
+uvicorn proxy.app:app --host 0.0.0.0 --port 8080
+```
+
+3. Open the dashboard in your browser: http://127.0.0.1:8081 -> Tests tab. Use the "Blocked secret read" disallowed test under `filesystem.read` to run the scenario interactively.
+
+4. Or run the automated demo script (requires `requests` installed in the environment):
+
+```bash
+python demo/run_demo.py
+```
+
+The script will:
+- Log into the dashboard with the default admin password (`admin123`).
+- Run the secret-file read test with the product ON (expect `DENY`).
+- Toggle the product OFF and run the same test (expect `ALLOW`).
+
+You can inspect the matching trace and events from the Tests tab or in `logs/poc.jsonl`.
+

@@ -14,6 +14,7 @@ from .forwarder import forward_json
 from .mitigation import Blocklist
 from .models import NormalizedRequest, RiskEvaluation, RuleEvaluation
 from detection import evaluate_rules, evaluate_risk 
+from policy_engine import evaluate_policy
 
 
 
@@ -74,6 +75,7 @@ async def handle_mcp_message(
     cfg: ProxyConfig,
     emitter: EventEmitter,
     blocklist: Blocklist,
+    product_enabled: bool | None = True,
 ) -> Tuple[int, Dict[str, Any], Dict[str, str]]:
     request_id = str(uuid.uuid4())
     trace_id = request_id
@@ -101,6 +103,66 @@ async def handle_mcp_message(
             "x-trace-id": trace_id,
             "x-request-id": request_id,
         }
+
+    # If a runtime override indicates the product is disabled, bypass detection
+    if product_enabled is False:
+        try:
+            nreq = _normalized_request(http_request, body, request_id)
+            headers_out = {"x-trace-id": nreq.trace_id, "x-request-id": nreq.request_id}
+
+            emitter.emit_request_received(
+                timestamp=now_iso(),
+                request_id=nreq.request_id,
+                trace_id=nreq.trace_id,
+                session_id=nreq.session_id,
+                client_ip=nreq.client_ip,
+                mcp_method=nreq.mcp_method,
+                tool_name=nreq.tool_name,
+                reason_code="RECEIVED",
+                reason="Request received; product protection is OFF, forwarding directly",
+                payload_size_bytes=nreq.payload_size_bytes,
+            )
+
+            emitter.emit_decision_made(
+                timestamp=now_iso(),
+                request_id=nreq.request_id,
+                trace_id=nreq.trace_id,
+                session_id=nreq.session_id,
+                client_ip=nreq.client_ip,
+                mcp_method=nreq.mcp_method,
+                tool_name=nreq.tool_name,
+                decision="ALLOW",
+                reason_code="PRODUCT_DISABLED",
+                reason="Runtime override: product protection disabled via dashboard",
+            )
+
+            forward_headers = {
+                key: value
+                for key, value in http_request.headers.items()
+                if key.lower() not in ("content-length", "host", "connection", "transfer-encoding", "accept-encoding")
+            }
+            forward_headers["x-trace-id"] = nreq.trace_id
+            forward_headers["x-request-id"] = nreq.request_id
+
+            status, data, latency_ms = await forward_json(cfg.upstream_url, nreq.raw_body, forward_headers)
+            emitter.emit_response_returned(
+                timestamp=now_iso(),
+                request_id=nreq.request_id,
+                trace_id=nreq.trace_id,
+                session_id=nreq.session_id,
+                client_ip=nreq.client_ip,
+                mcp_method=nreq.mcp_method,
+                tool_name=nreq.tool_name,
+                decision="ALLOW",
+                reason_code="UPSTREAM_RESPONSE",
+                reason=f"Upstream responded with status={status}",
+                upstream_status=status,
+                latency_ms=round(latency_ms, 3),
+            )
+            return status, data, {"x-trace-id": nreq.trace_id, "x-request-id": nreq.request_id}
+        except Exception:
+            # fallthrough to normal error handler below
+            raise
 
     try:
         nreq = _normalized_request(http_request, body, request_id)
@@ -162,31 +224,33 @@ async def handle_mcp_message(
                 stage_latency_ms=risk_latency_ms,
             )
 
-        decision = "ALLOW"
-        reason_code = "ALLOW"
-        reason = "Request allowed"
-        if rule_eval.opa_result == "DENY":
-            decision = "DENY"
-            reason_code = rule_eval.reason_code or "RULE_DENY"
-            reason = rule_eval.reason or "Denied by deterministic rule"
-        elif cfg.enable_model_eval and risk_eval is not None and risk_eval.risk_score >= risk_eval.risk_threshold:
-            decision = cfg.model_decision.upper()
-            if decision not in ("CHALLENGE", "DENY"):
-                decision = "CHALLENGE"
-            reason_code = "LLM_HIGH_RISK"
-            reason = f"Risk score {risk_eval.risk_score:.2f} >= threshold {risk_eval.risk_threshold:.2f}"
+        policy_decision = evaluate_policy(
+        rule_evaluation=rule_eval,
+        risk_evaluation=risk_eval,
+        request_context=nreq,
+    )
+
+        decision = policy_decision.decision
+        reason_code = policy_decision.decision_reason_code
+        reason = policy_decision.decision_reason
 
         emitter.emit_decision_made(
-            timestamp=now_iso(),
-            request_id=nreq.request_id,
-            trace_id=nreq.trace_id,
-            session_id=nreq.session_id,
-            client_ip=nreq.client_ip,
-            mcp_method=nreq.mcp_method,
-            tool_name=nreq.tool_name,
-            decision=decision,
-            reason_code=reason_code,
-            reason=reason,
+        timestamp=now_iso(),
+        request_id=nreq.request_id,
+        trace_id=nreq.trace_id,
+        session_id=nreq.session_id,
+        client_ip=nreq.client_ip,
+        mcp_method=nreq.mcp_method,
+        tool_name=nreq.tool_name,
+        decision=decision,
+        reason_code=reason_code,
+        reason=reason,
+        policy_id=policy_decision.policy_id,
+        policy_strategy=policy_decision.policy_strategy,
+        decision_source=policy_decision.source,
+        evidence_refs=policy_decision.evidence_refs,
+        thresholds_used=policy_decision.thresholds_used,
+        matched_conditions=policy_decision.matched_conditions,
         )
 
         if decision == "DENY" and cfg.enable_mitigation:

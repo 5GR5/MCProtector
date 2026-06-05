@@ -11,6 +11,7 @@ rules:
   filesystem.path_outside_allowed_base: true
   filesystem.path_traversal: true
   filesystem.missing_required_args: true
+  filesystem.secret_file_access: true
   abuse.sql_injection: true
   abuse.large_payload: true
   abuse.rapid_repeat_ip: true

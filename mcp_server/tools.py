@@ -10,6 +10,7 @@ from .config import ALLOWED_PATHS, FORBIDDEN_PATHS
 SIMULATED_FILESYSTEM = {
     "/project/readme.txt": "Welcome to MCProtector PoC!\nThis is a test file.",
     "/project/data/config.json": '{"version": "1.0", "name": "MCProtector"}',
+    "/project/data/secrets/passwords.txt": "# DEMO SECRET FILE - DO NOT USE IN PROD\nroot:toor\nadmin:1234\nservice_account:changeme\nSECRET_DEMO_PASSWORD: demo-pass-1234",
     "/data/sample.txt": "Sample data content for testing.",
     "/tmp/mcprotector/test.log": "2026-01-05 10:00:00 - System started"
 }

@@ -59,4 +59,20 @@ class MissingRequiredArgsRule(DetectionRule):
         return RuleResult(self.id, False)
 
 def get_rules():
-    return [PathOutsideAllowedBaseRule(), PathTraversalRule(), MissingRequiredArgsRule()]
+    return [PathOutsideAllowedBaseRule(), PathTraversalRule(), MissingRequiredArgsRule(), SecretFileAccessRule()]
+
+
+class SecretFileAccessRule(DetectionRule):
+    id = "filesystem.secret_file_access"
+    pack = "filesystem_pack"
+
+    def supports(self, req: NormalizedRequest) -> bool:
+        return isinstance(req.tool_args, dict) and "path" in req.tool_args
+
+    def evaluate(self, req: NormalizedRequest, state, ctx: RuleContext) -> RuleResult:
+        path = str(req.tool_args.get("path") or "")
+        # flag access to explicit secrets directory or well-known secrets filenames
+        lower = path.lower()
+        if "/secrets/" in lower or lower.endswith("passwords.txt") or "secret" in lower:
+            return RuleResult(self.id, True, f"Access to potential secrets file '{path}' is disallowed.", "critical")
+        return RuleResult(self.id, False)
