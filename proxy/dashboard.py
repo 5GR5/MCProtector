@@ -1677,16 +1677,6 @@ def _dashboard_page(state: DashboardState) -> str:
           </div>
         </div>
       </section>
-
-      <section class="section" id="timeline-section">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Timeline</div>
-            <h2>Request lifecycle — pipeline flow per trace</h2>
-          </div>
-        </div>
-        <div class="tl-list" id="timeline"></div>
-      </section>
     </div>
 
     <div id="trace-modal" style="display:none;position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);">
@@ -2191,6 +2181,13 @@ def _dashboard_page(state: DashboardState) -> str:
         target.innerHTML = `<tr><td colspan="7" class="empty-state" style="background: transparent;">No events recorded yet.</td></tr>`;
         return;
       }}
+      function abbreviateId(id) {{
+        if (!id) return "Unknown";
+        const s = String(id);
+        const take = Math.ceil(s.length / 2);
+        return escapeHtml(s.slice(0, take) + "...");
+      }}
+
       target.innerHTML = rows.map((event) => `
         <tr onclick="showTrace('${{escapeHtml(event.trace_id)}}')" style="cursor:pointer">
           <td>${{severityBadge(event.severity)}}</td>
@@ -2199,7 +2196,7 @@ def _dashboard_page(state: DashboardState) -> str:
             <div class="table-cell-title">${{escapeHtml(humanizeConstant(event.event_type))}}</div>
             <div class="table-cell-copy">${{escapeHtml(event.component || "proxy")}}</div>
           </td>
-          <td><code class="trace" title="${{escapeHtml(event.trace_id)}}">${{escapeHtml(event.trace_id)}}</code></td>
+          <td><code class="trace" title="${{escapeHtml(event.trace_id)}}">${{abbreviateId(event.trace_id)}}</code></td>
           <td>${{decisionPill(event.decision)}}</td>
           <td><code>${{escapeHtml(event.tool_name || event.mcp_method || "unknown")}}</code></td>
           <td>
@@ -2210,41 +2207,7 @@ def _dashboard_page(state: DashboardState) -> str:
       `).join("");
     }}
 
-    function renderTimeline(traces) {{
-      const target = document.getElementById("timeline");
-      if (!traces.length) {{
-        target.innerHTML = `<div class="empty-state">No request traces yet — run a scenario to generate traffic.</div>`;
-        return;
-      }}
-      target.innerHTML = traces.map((trace) => {{
-        const steps = (trace.steps || []).map((step) => {{
-          const sev = String(step.severity || "LOW").toLowerCase();
-          const abbrev = TL_ABBREV[step.event_type] || step.event_type.slice(0, 4);
-          const latency = step.stage_latency_ms != null
-            ? `${{step.stage_latency_ms}}ms`
-            : step.latency_ms != null ? `${{step.latency_ms}}ms` : "";
-          return `
-            <div class="tl-step">
-              <div class="tl-dot sev-${{sev}}" title="${{escapeHtml(step.event_type)}} — ${{escapeHtml(step.severity || 'LOW')}}">${{escapeHtml(abbrev)}}</div>
-              <div class="tl-label">
-                <div>${{escapeHtml(humanizeConstant(step.event_type))}}</div>
-                ${{latency ? `<div style="font-size:0.65rem;color:var(--muted)">${{escapeHtml(latency)}}</div>` : ""}}
-                ${{step.decision && step.decision !== "NONE" ? decisionPill(step.decision) : ""}}
-              </div>
-            </div>`;
-        }}).join("");
-        return `
-          <div class="tl-trace">
-            <div class="tl-header">
-              <code class="trace" title="${{escapeHtml(trace.trace_id)}}" style="font-size:0.82rem;">${{escapeHtml(trace.trace_id)}}</code>
-              ${{severityBadge(trace.max_severity)}}
-              ${{decisionPill(trace.decision)}}
-              <span style="color:var(--muted);font-size:0.82rem;"><code>${{escapeHtml(trace.tool_name || "—")}}</code></span>
-            </div>
-            <div class="tl-steps">${{steps}}</div>
-          </div>`;
-      }}).join("");
-    }}
+    
 
     let _allAlerts = [];
     const _alertFilter = {{ time: "all", severity: "all", status: "all" }};
@@ -2339,13 +2302,12 @@ def _dashboard_page(state: DashboardState) -> str:
     async function refreshDashboard() {{
       document.getElementById("status").textContent = "Refreshing live data...";
       try {{
-        const [overview, alerts, events, scenarios, blocklist, timeline] = await Promise.all([
+        const [overview, alerts, events, scenarios, blocklist] = await Promise.all([
           api("/api/overview"),
           api("/api/alerts"),
           api("/api/events"),
           api("/api/scenarios"),
           api("/api/blocklist"),
-          api("/api/timeline"),
         ]);
         if (!overview) {{
           return;
@@ -2362,7 +2324,6 @@ def _dashboard_page(state: DashboardState) -> str:
         _allAlerts = (alerts && alerts.alerts) || [];
         applyAlertFilters();
         renderEvents((events && events.events) || []);
-        renderTimeline((timeline && timeline.traces) || []);
         document.getElementById("status").textContent = "Last updated " + new Date().toLocaleTimeString();
       }} catch (error) {{
         document.getElementById("status").textContent = error.message || "Refresh failed.";
