@@ -537,6 +537,8 @@ async def _run_tool_access_test(
         "events": _serialize_events(trace_events),
     }
 
+    
+
 
 def _login_page(error_message: str | None = None) -> str:
     error_html = f"<p class='error'>{error_message}</p>" if error_message else ""
@@ -937,6 +939,21 @@ def _dashboard_page(state: DashboardState) -> str:
       z-index: 5;
       background: linear-gradient(180deg, rgba(244, 247, 251, 0.98), rgba(244, 247, 251, 0.78));
       backdrop-filter: blur(10px);
+    }}
+    .tab-btn {{
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-right: 8px;
+    }}
+    .tab-btn.active {{
+      background: var(--blue);
+      color: #fff;
+      border-color: transparent;
     }}
     .pill-nav a,
     .live-chip {{
@@ -1483,10 +1500,10 @@ def _dashboard_page(state: DashboardState) -> str:
         </div>
       </div>
       <div class="actions">
-        <button class="btn btn-primary" type="button" onclick="refreshDashboard()">Refresh</button>
+        <button id="tab-home-btn" class="tab-btn pill active" type="button" onclick="switchTab('home')">Home Page</button>
+        <button id="tab-advanced-btn" class="tab-btn pill" type="button" onclick="switchTab('advanced')">Advanced Info</button>
         <a class="btn" href="/tests">Tests</a>
-        <a class="btn" href="#events-section">Event Log</a>
-        <form method="post" action="/logout">
+        <form method="post" action="/logout" style="display:inline;">
           <button class="btn" type="submit">Log Out</button>
         </form>
       </div>
@@ -1520,15 +1537,10 @@ def _dashboard_page(state: DashboardState) -> str:
       </aside>
     </section>
 
-    <nav class="pill-nav">
-      <a href="#summary">Executive Summary</a>
-      <a href="#operations">Operations</a>
-      <a href="#alerts-section">Alerts</a>
-      <a href="#events-section">Recent Events</a>
-      <div class="live-chip" id="status">Loading live data...</div>
-    </nav>
+    
 
     <div class="stack">
+      <div id="home-sections">
       <section class="section" id="summary">
         <div class="section-head">
           <div>
@@ -1594,7 +1606,9 @@ def _dashboard_page(state: DashboardState) -> str:
           </article>
         </div>
       </section>
+      </div>
 
+      <div id="advanced-sections" style="display:none;">
       <section class="section" id="alerts-section">
         <div class="section-head">
           <div>
@@ -1677,9 +1691,10 @@ def _dashboard_page(state: DashboardState) -> str:
           </div>
         </div>
       </section>
+      </div>
     </div>
 
-    <div id="trace-modal" style="display:none;position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);">
+    <div id="trace-modal" style="display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);">
       <div id="trace-modal-content" style="max-width:1000px;width:min(96%,1000px);background:var(--panel);border-radius:12px;padding:18px;overflow:auto;max-height:80vh;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <h3 style="margin:0;">Request Lifecycle</h3>
@@ -1829,6 +1844,12 @@ def _dashboard_page(state: DashboardState) -> str:
         throw new Error(error.detail || `Request failed with status ${{response.status}}.`);
       }}
       return response.json();
+    }}
+
+    function setStatus(text) {{
+      const el = document.getElementById('status');
+      if (el) {{ el.textContent = text; }}
+      else {{ console.debug('[dashboard] status:', text); }}
     }}
 
     function renderHeroMeta(data) {{
@@ -2247,7 +2268,7 @@ def _dashboard_page(state: DashboardState) -> str:
         alert('Trace id is missing');
         return;
       }}
-      document.getElementById('status').textContent = 'Loading trace ' + traceId + '...';
+      setStatus('Loading trace ' + traceId + '...');
       try {{
         const data = await api('/api/trace/' + encodeURIComponent(traceId));
         if (!data) return;
@@ -2295,12 +2316,33 @@ def _dashboard_page(state: DashboardState) -> str:
       }} catch (err) {{
         alert(err.message || err);
       }} finally {{
-        document.getElementById('status').textContent = 'Last updated ' + new Date().toLocaleTimeString();
+        setStatus('Last updated ' + new Date().toLocaleTimeString());
+      }}
+    }}
+
+    function switchTab(tab) {{
+      const homeSections = document.getElementById('home-sections');
+      const advSections = document.getElementById('advanced-sections');
+      const hero = document.querySelector('.hero');
+      const homeBtn = document.getElementById('tab-home-btn');
+      const advBtn = document.getElementById('tab-advanced-btn');
+      if (tab === 'advanced') {{
+        if (homeSections) homeSections.style.display = 'none';
+        if (advSections) advSections.style.display = '';
+        if (hero) hero.style.display = 'none';
+        if (homeBtn) homeBtn.classList.remove('active');
+        if (advBtn) advBtn.classList.add('active');
+      }} else {{
+        if (homeSections) homeSections.style.display = '';
+        if (advSections) advSections.style.display = 'none';
+        if (hero) hero.style.display = '';
+        if (homeBtn) homeBtn.classList.add('active');
+        if (advBtn) advBtn.classList.remove('active');
       }}
     }}
 
     async function refreshDashboard() {{
-      document.getElementById("status").textContent = "Refreshing live data...";
+      setStatus("Refreshing live data...");
       try {{
         const [overview, alerts, events, scenarios, blocklist] = await Promise.all([
           api("/api/overview"),
@@ -2324,14 +2366,14 @@ def _dashboard_page(state: DashboardState) -> str:
         _allAlerts = (alerts && alerts.alerts) || [];
         applyAlertFilters();
         renderEvents((events && events.events) || []);
-        document.getElementById("status").textContent = "Last updated " + new Date().toLocaleTimeString();
+        setStatus("Last updated " + new Date().toLocaleTimeString());
       }} catch (error) {{
-        document.getElementById("status").textContent = error.message || "Refresh failed.";
+        setStatus(error.message || "Refresh failed.");
       }}
     }}
 
     async function runScenario(name) {{
-      document.getElementById("status").textContent = `Running ${{name}} scenario...`;
+      setStatus(`Running ${{name}} scenario...`);
       try {{
         await api(`/api/scenarios/${{name}}/run`, {{
           method: "POST",
@@ -2339,7 +2381,7 @@ def _dashboard_page(state: DashboardState) -> str:
         }});
         await refreshDashboard();
       }} catch (error) {{
-        document.getElementById("status").textContent = error.message || "Scenario run failed.";
+        setStatus(error.message || "Scenario run failed.");
       }}
     }}
 
@@ -2837,14 +2879,20 @@ def _tests_page(state: DashboardState) -> str:
       return response.json();
     }}
 
+    function setStatus(text) {{
+      const el = document.getElementById('status');
+      if (el) {{ el.textContent = text; }}
+      else {{ console.debug('[tests] status:', text); }}
+    }}
+
     async function loadDefinitions() {{
-      document.getElementById("status").textContent = "Loading tool definitions...";
+      setStatus("Loading tool definitions...");
       try {{
         const data = await api("/api/tests/definitions");
         renderToolGrid(data.tools || []);
-        document.getElementById("status").textContent = "Ready to run real proxy tests.";
+        setStatus("Ready to run real proxy tests.");
       }} catch (error) {{
-        document.getElementById("status").textContent = error.message || "Could not load tests.";
+        setStatus(error.message || "Could not load tests.");
       }}
     }}
 
@@ -2900,12 +2948,12 @@ def _tests_page(state: DashboardState) -> str:
       try {{
         args = JSON.parse(textarea.value || "{{}}");
       }} catch (error) {{
-        document.getElementById("status").textContent = `Invalid JSON arguments for ${{toolName}} ${{scenario}}.`;
+        setStatus(`Invalid JSON arguments for ${{toolName}} ${{scenario}}.`);
         textarea.focus();
         return;
       }}
 
-      document.getElementById("status").textContent = `Running ${{toolName}} ${{scenario}} through the proxy...`;
+      setStatus(`Running ${{toolName}} ${{scenario}} through the proxy...`);
       try {{
         const result = await api("/api/tests/run", {{
           method: "POST",
@@ -2916,9 +2964,9 @@ def _tests_page(state: DashboardState) -> str:
         runHistory.splice(12);
         renderResult(result);
         renderHistory();
-        document.getElementById("status").textContent = `Completed ${{toolName}} ${{scenario}} test.`;
+        setStatus(`Completed ${{toolName}} ${{scenario}} test.`);
       }} catch (error) {{
-        document.getElementById("status").textContent = error.message || "Test run failed.";
+        setStatus(error.message || "Test run failed.");
       }}
     }}
 
