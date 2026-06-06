@@ -235,22 +235,16 @@ async def handle_mcp_message(
         reason = policy_decision.decision_reason
 
         emitter.emit_decision_made(
-        timestamp=now_iso(),
-        request_id=nreq.request_id,
-        trace_id=nreq.trace_id,
-        session_id=nreq.session_id,
-        client_ip=nreq.client_ip,
-        mcp_method=nreq.mcp_method,
-        tool_name=nreq.tool_name,
-        decision=decision,
-        reason_code=reason_code,
-        reason=reason,
-        policy_id=policy_decision.policy_id,
-        policy_strategy=policy_decision.policy_strategy,
-        decision_source=policy_decision.source,
-        evidence_refs=policy_decision.evidence_refs,
-        thresholds_used=policy_decision.thresholds_used,
-        matched_conditions=policy_decision.matched_conditions,
+            timestamp=now_iso(),
+            request_id=nreq.request_id,
+            trace_id=nreq.trace_id,
+            session_id=nreq.session_id,
+            client_ip=nreq.client_ip,
+            mcp_method=nreq.mcp_method,
+            tool_name=nreq.tool_name,
+            decision=decision,
+            reason_code=reason_code,
+            reason=reason,
         )
 
         if decision == "DENY" and cfg.enable_mitigation:
