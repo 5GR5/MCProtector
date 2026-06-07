@@ -48,3 +48,4 @@ settings:
     large_payload: 0.10
     filesystem_tool: 0.10
     missing_auth_token: 0.10
+    sql_injection: 0.40

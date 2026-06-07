@@ -8,9 +8,13 @@ Each test uses a known input and asserts the exact expected output so the
 proxy team can verify integration quickly without running the full stack.
 """
 import pytest
-from detection.rules import evaluate_rules
-from detection.risk import evaluate_risk
+from detection import evaluate_risk, evaluate_rules, reload_engine
 from proxy.models import NormalizedRequest
+
+
+@pytest.fixture(autouse=True)
+def reset_detection_state():
+    reload_engine()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -20,6 +24,7 @@ def make_req(**kwargs) -> NormalizedRequest:
     defaults = dict(
         request_id="test-req-1",
         trace_id="test-trace-1",
+        client_id="test-client",
         client_ip="127.0.0.1",
         session_id="sess-test",
         mcp_method="tools/call",
@@ -42,28 +47,28 @@ class TestR1UnsafeFileAccess:
     def test_bad_path_denied(self):
         """R1: path outside allowed base → DENY with UNSAFE_FILE_ACCESS."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/etc/passwd"},
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "UNSAFE_FILE_ACCESS" in result.opa_matched_rules
-        assert result.reason_code == "UNSAFE_FILE_ACCESS"
+        assert "filesystem.path_outside_allowed_base" in result.opa_matched_rules
+        assert result.reason_code == "filesystem.path_outside_allowed_base"
 
     def test_traversal_path_denied(self):
         """R1: path traversal that escapes allowed base → DENY."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/project/data/../../etc/passwd"},
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "UNSAFE_FILE_ACCESS" in result.opa_matched_rules
+        assert "filesystem.path_outside_allowed_base" in result.opa_matched_rules
 
     def test_good_path_allowed(self):
         """R1: path inside allowed base → ALLOW."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/project/data/report.txt"},
         )
         result = evaluate_rules(req)
@@ -73,7 +78,7 @@ class TestR1UnsafeFileAccess:
     def test_nested_good_path_allowed(self):
         """R1: deeply nested path inside allowed base → ALLOW."""
         req = make_req(
-            tool_name="write_file",
+            tool_name="filesystem.write",
             tool_args={"path": "/project/data/subdir/notes.txt", "content": "hello"},
         )
         result = evaluate_rules(req)
@@ -82,12 +87,12 @@ class TestR1UnsafeFileAccess:
     def test_no_path_arg_skips_r1(self):
         """R1: tool with no path argument → R1 does not apply."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"query": "SELECT 1"},   # no path
         )
         # R3 will fire (missing 'path') but R1 should not
         result = evaluate_rules(req)
-        assert "UNSAFE_FILE_ACCESS" not in result.opa_matched_rules
+        assert "filesystem.path_outside_allowed_base" not in result.opa_matched_rules
 
 
 # ── R3: Invalid arguments ─────────────────────────────────────────────────────
@@ -97,28 +102,28 @@ class TestR3InvalidArguments:
     def test_missing_required_arg_denied(self):
         """R3: known tool missing required arg → DENY with INVALID_ARGUMENTS."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={},   # missing 'path'
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "INVALID_ARGUMENTS" in result.opa_matched_rules
-        assert result.reason_code == "INVALID_ARGUMENTS"
+        assert "filesystem.missing_required_args" in result.opa_matched_rules
+        assert result.reason_code == "filesystem.missing_required_args"
 
     def test_write_file_missing_content_denied(self):
         """R3: write_file with only path (missing content) → DENY."""
         req = make_req(
-            tool_name="write_file",
+            tool_name="filesystem.write",
             tool_args={"path": "/project/data/out.txt"},  # missing 'content'
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "INVALID_ARGUMENTS" in result.opa_matched_rules
+        assert "filesystem.missing_required_args" in result.opa_matched_rules
 
     def test_all_args_present_allowed(self):
         """R3: all required args present → ALLOW."""
         req = make_req(
-            tool_name="write_file",
+            tool_name="filesystem.write",
             tool_args={"path": "/project/data/out.txt", "content": "data"},
         )
         result = evaluate_rules(req)
@@ -156,8 +161,8 @@ class TestR2SqlInjection:
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "SQL_INJECTION" in result.opa_matched_rules
-        assert result.reason_code == "SQL_INJECTION"
+        assert "abuse.sql_injection" in result.opa_matched_rules
+        assert result.reason_code == "abuse.sql_injection"
 
     def test_union_select_denied(self):
         """R2: UNION SELECT exfiltration attempt → DENY."""
@@ -167,7 +172,7 @@ class TestR2SqlInjection:
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "SQL_INJECTION" in result.opa_matched_rules
+        assert "abuse.sql_injection" in result.opa_matched_rules
 
     def test_drop_table_denied(self):
         """R2: DROP TABLE destructive statement → DENY."""
@@ -177,7 +182,7 @@ class TestR2SqlInjection:
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "SQL_INJECTION" in result.opa_matched_rules
+        assert "abuse.sql_injection" in result.opa_matched_rules
 
     def test_sql_in_non_query_arg_denied(self):
         """R2: injection pattern in any arg, not just 'query' → DENY."""
@@ -188,7 +193,7 @@ class TestR2SqlInjection:
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "SQL_INJECTION" in result.opa_matched_rules
+        assert "abuse.sql_injection" in result.opa_matched_rules
 
     def test_parameterized_query_allowed(self):
         """R2: safe parameterized query with clean value → ALLOW."""
@@ -199,7 +204,7 @@ class TestR2SqlInjection:
         )
         result = evaluate_rules(req)
         assert result.opa_result == "ALLOW"
-        assert "SQL_INJECTION" not in result.opa_matched_rules
+        assert "abuse.sql_injection" not in result.opa_matched_rules
 
     def test_normal_query_allowed(self):
         """R2: plain safe query → ALLOW."""
@@ -218,7 +223,7 @@ class TestR2SqlInjection:
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "SQL_INJECTION" in result.opa_matched_rules
+        assert "abuse.sql_injection" in result.opa_matched_rules
 
 
 # ── Combined: both rules violated ────────────────────────────────────────────
@@ -228,22 +233,22 @@ class TestCombinedViolations:
     def test_r1_and_r3_both_logged(self):
         """Both R1 and R3 fire: bad path AND missing required arg."""
         req = make_req(
-            tool_name="write_file",
+            tool_name="filesystem.write",
             # path is bad (R1) AND content is missing (R3)
             tool_args={"path": "/etc/shadow"},
         )
         result = evaluate_rules(req)
         assert result.opa_result == "DENY"
-        assert "UNSAFE_FILE_ACCESS" in result.opa_matched_rules
-        assert "INVALID_ARGUMENTS" in result.opa_matched_rules
+        assert "filesystem.path_outside_allowed_base" in result.opa_matched_rules
+        assert "filesystem.missing_required_args" in result.opa_matched_rules
         assert len(result.violations) == 2
         # First matched rule wins for reason_code
-        assert result.reason_code == "UNSAFE_FILE_ACCESS"
+        assert result.reason_code == "filesystem.path_outside_allowed_base"
 
     def test_safe_request_fully_allowed(self):
         """Happy path: good tool, good path, all args present → ALLOW."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/project/data/safe.txt"},
         )
         result = evaluate_rules(req)
@@ -265,12 +270,12 @@ class TestRiskScorer:
         result = evaluate_risk(req, threshold=0.80)
         assert result.risk_score <= 0.3
         assert result.risk_threshold == 0.80
-        assert result.model_name == "heuristic-risk-scorer-v1"
+        assert result.model_name == "heuristic-risk-scorer-v2"
 
     def test_filesystem_tool_higher_score(self):
         """Filesystem tool → risk score is elevated (≥ 0.2)."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/project/data/report.txt"},
         )
         result = evaluate_risk(req, threshold=0.80)
@@ -279,7 +284,7 @@ class TestRiskScorer:
     def test_bad_path_very_high_score(self):
         """Path outside allowed base → high risk score (≥ 0.5)."""
         req = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/etc/passwd"},
         )
         result = evaluate_risk(req, threshold=0.80)
@@ -288,12 +293,12 @@ class TestRiskScorer:
     def test_no_auth_token_adds_to_score(self):
         """Missing auth token → slightly higher score than same request with token."""
         req_with_token = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/project/data/f.txt"},
             auth_token="Bearer abc",
         )
         req_no_token = make_req(
-            tool_name="read_file",
+            tool_name="filesystem.read",
             tool_args={"path": "/project/data/f.txt"},
             auth_token=None,
         )
@@ -304,7 +309,7 @@ class TestRiskScorer:
     def test_score_capped_at_1(self):
         """Score never exceeds 1.0 even with all bad signals."""
         req = make_req(
-            tool_name="write_file",
+            tool_name="filesystem.write",
             tool_args={"path": "/etc/shadow", "content": "../../evil"},
             auth_token=None,
             payload_size_bytes=9999,
@@ -314,13 +319,13 @@ class TestRiskScorer:
 
     def test_threshold_is_echoed(self):
         """risk_threshold in result must match the threshold passed in."""
-        req = make_req(tool_name="read_file", tool_args={"path": "/project/data/x"})
+        req = make_req(tool_name="filesystem.read", tool_args={"path": "/project/data/x"})
         result = evaluate_risk(req, threshold=0.55)
         assert result.risk_threshold == 0.55
 
     def test_reason_summary_present(self):
         """model_reason_summary must be a non-empty string."""
-        req = make_req(tool_name="read_file", tool_args={"path": "/project/data/x"})
+        req = make_req(tool_name="filesystem.read", tool_args={"path": "/project/data/x"})
         result = evaluate_risk(req, threshold=0.80)
         assert isinstance(result.model_reason_summary, str)
         assert len(result.model_reason_summary) > 0

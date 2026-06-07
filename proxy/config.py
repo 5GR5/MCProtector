@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Any, Literal
 import yaml
 
 LogMode = Literal["console_json", "console_json_and_file"]
@@ -20,6 +20,9 @@ class ProxyConfig:
     dashboard_session_secret: str = "mcprotector-dashboard-secret"
 
     upstream_url: str = "http://127.0.0.1:9000/mcp/message"
+    upstreams: dict[str, str] = field(default_factory=dict)
+    default_upstream: str = "default"
+    client_routes: dict[str, str] = field(default_factory=dict)
 
     enable_model_eval: bool = True
     risk_threshold: float = 0.80
@@ -35,7 +38,7 @@ class ProxyConfig:
 
     @staticmethod
     def load(path: str = "config.yaml") -> "ProxyConfig":
-        data = {}
+        data: dict[str, Any] = {}
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
@@ -50,7 +53,22 @@ class ProxyConfig:
         cfg.dashboard_port = int(os.getenv("DASHBOARD_PORT", str(cfg.dashboard_port)))
         cfg.dashboard_admin_password = os.getenv("DASHBOARD_ADMIN_PASSWORD", cfg.dashboard_admin_password)
         cfg.dashboard_session_secret = os.getenv("DASHBOARD_SESSION_SECRET", cfg.dashboard_session_secret)
-        cfg.upstream_url = os.getenv("UPSTREAM_URL", cfg.upstream_url)
+        env_upstream_url = os.getenv("UPSTREAM_URL")
+        if env_upstream_url:
+            cfg.upstream_url = env_upstream_url
+        env_upstreams = os.getenv("UPSTREAMS")
+        if env_upstreams:
+            parsed = yaml.safe_load(env_upstreams)
+            if not isinstance(parsed, dict):
+                raise ValueError("UPSTREAMS must be a YAML/JSON object of name-to-URL mappings")
+            cfg.upstreams = {str(name): str(url) for name, url in parsed.items()}
+        cfg.default_upstream = os.getenv("DEFAULT_UPSTREAM", cfg.default_upstream)
+        env_client_routes = os.getenv("CLIENT_ROUTES")
+        if env_client_routes:
+            parsed = yaml.safe_load(env_client_routes)
+            if not isinstance(parsed, dict):
+                raise ValueError("CLIENT_ROUTES must be a YAML/JSON object of client-to-server mappings")
+            cfg.client_routes = {str(client_id): str(server) for client_id, server in parsed.items()}
         cfg.enable_model_eval = os.getenv("ENABLE_MODEL_EVAL", str(cfg.enable_model_eval)).lower() in ("1", "true", "yes", "y")
         cfg.risk_threshold = float(os.getenv("RISK_THRESHOLD", str(cfg.risk_threshold)))
         cfg.model_decision = os.getenv("MODEL_DECISION", cfg.model_decision).upper()
@@ -60,5 +78,13 @@ class ProxyConfig:
         cfg.log_file_path = os.getenv("LOG_FILE_PATH", cfg.log_file_path)
         cfg.demo_human_log = os.getenv("DEMO_HUMAN_LOG", str(cfg.demo_human_log)).lower() in ("1", "true", "yes", "y")
         cfg.trace_filter = os.getenv("TRACE_FILTER", cfg.trace_filter)
+
+        if not cfg.upstreams:
+            cfg.upstreams = {"default": cfg.upstream_url}
+            cfg.default_upstream = "default"
+        elif cfg.default_upstream not in cfg.upstreams:
+            raise ValueError(f"default_upstream '{cfg.default_upstream}' is not present in upstreams")
+        elif env_upstream_url:
+            cfg.upstreams[cfg.default_upstream] = env_upstream_url
 
         return cfg

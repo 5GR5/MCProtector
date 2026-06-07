@@ -9,7 +9,7 @@ This package is a runnable PoC proxy that:
 * runs rule detection and optional model scoring
 * decides ALLOW / DENY / CHALLENGE
 * applies mitigation (in-memory IP blocklist)
-* forwards to a local MCP server when allowed
+* routes multiple identified clients to multiple named MCP servers
 * emits structured JSON events for every stage
 
 ---
@@ -32,7 +32,8 @@ All logs follow a shared structure.
 
 * `timestamp`, `level`, `event_type`
 * `component`, `request_id`, `trace_id`
-* `client_ip`, `decision`, `reason`
+* `client_id`, `client_ip`, `decision`, `reason`
+* `upstream_name` for requests routed to a named MCP server
 
 **Optional groups:**
 
@@ -237,6 +238,21 @@ The proxy listens for MCP traffic on `http://127.0.0.1:8080/mcp/message`.
 
 The admin dashboard starts automatically on `http://127.0.0.1:8081`.
 
+The dashboard summary includes a responsive activity graph for ALLOW and DENY
+decisions. The old CHALLENGED summary metric is not displayed. The
+`CHALLENGE` security decision still exists in the policy engine and event
+schema.
+
+The **Topology** page at `http://127.0.0.1:8081/topology` shows observed MCP
+clients, the MCProtector proxy, and configured MCP servers as a connected graph.
+Use either filter to focus the graph:
+
+* Client filter: shows the selected client, proxy, and servers used by that client.
+* MCP server filter: shows the selected server, proxy, and clients routed to it.
+
+Clicking a client or server circle applies the same filter directly from the
+diagram. Relationship labels show the number of forwarded requests.
+
 Default dashboard password:
 
 ```text
@@ -249,9 +265,43 @@ Override with:
 DASHBOARD_ADMIN_PASSWORD=your-password uvicorn proxy.app:app --host 0.0.0.0 --port 8080
 ```
 
-Update `config.yaml`:
+### Multiple MCP servers
 
-* `upstream_url: "http://127.0.0.1:9000/mcp/message"`
+Configure named upstream servers in `config.yaml`:
+
+```yaml
+upstreams:
+  primary: "http://127.0.0.1:9000/mcp/message"
+  secondary: "http://127.0.0.1:9001/mcp/message"
+default_upstream: "primary"
+
+client_routes:
+  client-primary: "primary"
+  client-secondary: "secondary"
+```
+
+Routing precedence:
+
+1. `X-MCP-Server` / CLI `--target-server`
+2. `client_routes` entry matching `X-Client-ID`
+3. `default_upstream`
+
+Only configured names are accepted. A request for an unknown server receives
+HTTP `400` with `unknown_upstream`; clients cannot provide an arbitrary URL.
+
+The legacy single-server setting remains supported:
+
+```yaml
+upstream_url: "http://127.0.0.1:9000/mcp/message"
+```
+
+Environment overrides:
+
+```text
+DEFAULT_UPSTREAM=primary
+UPSTREAMS={"primary":"http://127.0.0.1:9000/mcp/message","secondary":"http://127.0.0.1:9001/mcp/message"}
+CLIENT_ROUTES={"client-a":"primary","client-b":"secondary"}
+```
 
 ---
 
@@ -302,6 +352,14 @@ You should see:
 python -m mcp_server.server --port 9000
 ```
 
+The included server uses a threaded HTTP server, so requests from multiple
+clients can be processed concurrently. Run additional instances on other
+ports:
+
+```bash
+python -m mcp_server.server --port 9001
+```
+
 ### Tools
 
 | Tool             | Description     | Arguments            |
@@ -329,6 +387,25 @@ python -m mcp_client.client --server http://127.0.0.1:9000 tools list
 python -m mcp_client.client --server http://127.0.0.1:9000 tools call \
   --tool filesystem.read --args '{"path": "/project/data/config.json"}'
 ```
+
+When using the proxy, `--server` is the proxy URL and `--target-server` is the
+configured upstream name:
+
+```bash
+python -m mcp_client.client \
+  --server http://127.0.0.1:8080/mcp/message \
+  --client-id client-a \
+  --target-server primary \
+  tools list
+
+python -m mcp_client.client \
+  --server http://127.0.0.1:8080/mcp/message \
+  --client-id client-b \
+  --target-server secondary \
+  tools list
+```
+
+Omit `--target-server` to use `client_routes` or `default_upstream`.
 
 ---
 
@@ -414,4 +491,93 @@ The script will:
 - Toggle the product OFF and run the same test (expect `ALLOW`).
 
 You can inspect the matching trace and events from the Tests tab or in `logs/poc.jsonl`.
+
+---
+
+## Verify the changes
+
+### 1. Automated tests
+
+```bash
+python -m pytest -q
+```
+
+Expected result:
+
+```text
+42 passed
+```
+
+### 2. Start two servers and the proxy
+
+Open three terminals:
+
+```bash
+# Terminal 1
+python -m mcp_server.server --port 9000
+
+# Terminal 2
+python -m mcp_server.server --port 9001
+
+# Terminal 3
+uvicorn proxy.app:app --host 127.0.0.1 --port 8080
+```
+
+### 3. Send two clients to different servers
+
+Open two more terminals and run:
+
+```bash
+python -m mcp_client.client \
+  --server http://127.0.0.1:8080/mcp/message \
+  --client-id verify-client-a \
+  --target-server primary \
+  tools list
+```
+
+```bash
+python -m mcp_client.client \
+  --server http://127.0.0.1:8080/mcp/message \
+  --client-id verify-client-b \
+  --target-server secondary \
+  tools list
+```
+
+Both commands should return the MCP tool list. In `logs/poc.jsonl`, the events
+for the two requests should contain different values:
+
+```json
+{"client_id":"verify-client-a","upstream_name":"primary"}
+{"client_id":"verify-client-b","upstream_name":"secondary"}
+```
+
+### 4. Check safe rejection
+
+```bash
+python -m mcp_client.client \
+  --server http://127.0.0.1:8080/mcp/message \
+  --client-id verify-invalid \
+  --target-server missing \
+  ping
+```
+
+Expected response: `unknown_upstream`.
+
+### 5. Check the dashboard graph
+
+1. Open `http://127.0.0.1:8081`.
+2. Log in with `admin123`.
+3. Run Allowed and Denied scenarios, or use the two clients above.
+4. Confirm that Request Activity shows ALLOW and DENY lines.
+5. Confirm that Unique clients increases and MCP servers shows `2`.
+
+### 6. Check the connection topology
+
+1. Open `http://127.0.0.1:8081/topology`.
+2. Confirm that client circles connect to the proxy and the proxy connects to
+   `primary` and `secondary`.
+3. Select a client and confirm unrelated servers disappear.
+4. Reset, select an MCP server, and confirm unrelated clients disappear.
+5. Resize the browser or open mobile device tools and confirm the graph changes
+   to a vertical client-proxy-server layout without overlapping circles.
 

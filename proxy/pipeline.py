@@ -13,7 +13,8 @@ from .errors import error_payload
 from .forwarder import forward_json
 from .mitigation import Blocklist
 from .models import NormalizedRequest, RiskEvaluation, RuleEvaluation
-from detection import evaluate_rules, evaluate_risk 
+from .routing import UpstreamRouter, UpstreamSelectionError
+from detection import evaluate_risk, evaluate_rules
 from policy_engine import evaluate_policy
 
 
@@ -25,6 +26,14 @@ def _client_ip(req: Request) -> str:
     if req.client and req.client.host:
         return req.client.host
     return "unknown"
+
+
+def _client_id(req: Request) -> str:
+    return (
+        req.headers.get("x-client-id")
+        or req.headers.get("x-session-id")
+        or _client_ip(req)
+    )
 
 
 def _bearer_token(req: Request) -> Optional[str]:
@@ -56,6 +65,7 @@ def _normalized_request(req: Request, body: Dict[str, Any], request_id: str) -> 
     return NormalizedRequest(
         request_id=request_id,
         trace_id=trace_id,
+        client_id=_client_id(req),
         client_ip=_client_ip(req),
         session_id=req.headers.get("x-session-id"),
         mcp_method=method,
@@ -69,12 +79,19 @@ def _normalized_request(req: Request, body: Dict[str, Any], request_id: str) -> 
     )
 
 
+def _router_from_config(cfg: ProxyConfig) -> UpstreamRouter:
+    upstreams = cfg.upstreams or {"default": cfg.upstream_url}
+    default_upstream = cfg.default_upstream if cfg.upstreams else "default"
+    return UpstreamRouter(upstreams, default_upstream, cfg.client_routes)
+
+
 async def handle_mcp_message(
     http_request: Request,
     body: Dict[str, Any],
     cfg: ProxyConfig,
     emitter: EventEmitter,
     blocklist: Blocklist,
+    router: UpstreamRouter | None = None,
     product_enabled: bool | None = True,
 ) -> Tuple[int, Dict[str, Any], Dict[str, str]]:
     request_id = str(uuid.uuid4())
@@ -82,6 +99,7 @@ async def handle_mcp_message(
     ip = _client_ip(http_request)
     method = (body.get("method") or "unknown") if isinstance(body, dict) else "unknown"
     session_id = http_request.headers.get("x-session-id")
+    client_id = _client_id(http_request)
     tool_name = None
     if isinstance(body, dict):
         tool_name, _ = _extract_tool(method, body)
@@ -92,6 +110,7 @@ async def handle_mcp_message(
             request_id=request_id,
             trace_id=trace_id,
             session_id=session_id,
+            client_id=client_id,
             client_ip=ip,
             mcp_method=method,
             tool_name=tool_name,
@@ -108,19 +127,27 @@ async def handle_mcp_message(
     if product_enabled is False:
         try:
             nreq = _normalized_request(http_request, body, request_id)
-            headers_out = {"x-trace-id": nreq.trace_id, "x-request-id": nreq.request_id}
+            active_router = router or _router_from_config(cfg)
+            target = active_router.resolve(nreq.client_id, http_request.headers.get("x-mcp-server"))
+            headers_out = {
+                "x-trace-id": nreq.trace_id,
+                "x-request-id": nreq.request_id,
+                "x-mcp-server": target.name,
+            }
 
             emitter.emit_request_received(
                 timestamp=now_iso(),
                 request_id=nreq.request_id,
                 trace_id=nreq.trace_id,
                 session_id=nreq.session_id,
+                client_id=nreq.client_id,
                 client_ip=nreq.client_ip,
                 mcp_method=nreq.mcp_method,
                 tool_name=nreq.tool_name,
                 reason_code="RECEIVED",
                 reason="Request received; product protection is OFF, forwarding directly",
                 payload_size_bytes=nreq.payload_size_bytes,
+                upstream_name=target.name,
             )
 
             emitter.emit_decision_made(
@@ -128,12 +155,14 @@ async def handle_mcp_message(
                 request_id=nreq.request_id,
                 trace_id=nreq.trace_id,
                 session_id=nreq.session_id,
+                client_id=nreq.client_id,
                 client_ip=nreq.client_ip,
                 mcp_method=nreq.mcp_method,
                 tool_name=nreq.tool_name,
                 decision="ALLOW",
                 reason_code="PRODUCT_DISABLED",
                 reason="Runtime override: product protection disabled via dashboard",
+                upstream_name=target.name,
             )
 
             forward_headers = {
@@ -144,12 +173,13 @@ async def handle_mcp_message(
             forward_headers["x-trace-id"] = nreq.trace_id
             forward_headers["x-request-id"] = nreq.request_id
 
-            status, data, latency_ms = await forward_json(cfg.upstream_url, nreq.raw_body, forward_headers)
+            status, data, latency_ms = await forward_json(target.url, nreq.raw_body, forward_headers)
             emitter.emit_response_returned(
                 timestamp=now_iso(),
                 request_id=nreq.request_id,
                 trace_id=nreq.trace_id,
                 session_id=nreq.session_id,
+                client_id=nreq.client_id,
                 client_ip=nreq.client_ip,
                 mcp_method=nreq.mcp_method,
                 tool_name=nreq.tool_name,
@@ -158,27 +188,41 @@ async def handle_mcp_message(
                 reason=f"Upstream responded with status={status}",
                 upstream_status=status,
                 latency_ms=round(latency_ms, 3),
+                upstream_name=target.name,
             )
-            return status, data, {"x-trace-id": nreq.trace_id, "x-request-id": nreq.request_id}
+            return status, data, headers_out
+        except UpstreamSelectionError as exc:
+            return 400, error_payload(trace_id, "UNKNOWN_UPSTREAM", str(exc)), {
+                "x-trace-id": trace_id,
+                "x-request-id": request_id,
+            }
         except Exception:
             # fallthrough to normal error handler below
             raise
 
     try:
         nreq = _normalized_request(http_request, body, request_id)
-        headers_out = {"x-trace-id": nreq.trace_id, "x-request-id": nreq.request_id}
+        active_router = router or _router_from_config(cfg)
+        target = active_router.resolve(nreq.client_id, http_request.headers.get("x-mcp-server"))
+        headers_out = {
+            "x-trace-id": nreq.trace_id,
+            "x-request-id": nreq.request_id,
+            "x-mcp-server": target.name,
+        }
 
         emitter.emit_request_received(
             timestamp=now_iso(),
             request_id=nreq.request_id,
             trace_id=nreq.trace_id,
             session_id=nreq.session_id,
+            client_id=nreq.client_id,
             client_ip=nreq.client_ip,
             mcp_method=nreq.mcp_method,
             tool_name=nreq.tool_name,
             reason_code="RECEIVED",
             reason="Request received and queued for evaluation",
             payload_size_bytes=nreq.payload_size_bytes,
+            upstream_name=target.name,
         )
 
         rule_started = time.perf_counter()
@@ -189,6 +233,7 @@ async def handle_mcp_message(
             request_id=nreq.request_id,
             trace_id=nreq.trace_id,
             session_id=nreq.session_id,
+            client_id=nreq.client_id,
             client_ip=nreq.client_ip,
             mcp_method=nreq.mcp_method,
             tool_name=nreq.tool_name,
@@ -199,6 +244,7 @@ async def handle_mcp_message(
             reason_code=rule_eval.reason_code,
             reason=rule_eval.reason,
             stage_latency_ms=rule_latency_ms,
+            upstream_name=target.name,
         )
 
         risk_eval: Optional[RiskEvaluation] = None
@@ -211,6 +257,7 @@ async def handle_mcp_message(
                 request_id=nreq.request_id,
                 trace_id=nreq.trace_id,
                 session_id=nreq.session_id,
+                client_id=nreq.client_id,
                 client_ip=nreq.client_ip,
                 mcp_method=nreq.mcp_method,
                 tool_name=nreq.tool_name,
@@ -222,13 +269,14 @@ async def handle_mcp_message(
                 reason_code=risk_eval.reason_code,
                 reason=risk_eval.reason,
                 stage_latency_ms=risk_latency_ms,
+                upstream_name=target.name,
             )
 
         policy_decision = evaluate_policy(
-        rule_evaluation=rule_eval,
-        risk_evaluation=risk_eval,
-        request_context=nreq,
-    )
+            rule_evaluation=rule_eval,
+            risk_evaluation=risk_eval,
+            request_context=nreq,
+        )
 
         decision = policy_decision.decision
         reason_code = policy_decision.decision_reason_code
@@ -239,12 +287,14 @@ async def handle_mcp_message(
             request_id=nreq.request_id,
             trace_id=nreq.trace_id,
             session_id=nreq.session_id,
+            client_id=nreq.client_id,
             client_ip=nreq.client_ip,
             mcp_method=nreq.mcp_method,
             tool_name=nreq.tool_name,
             decision=decision,
             reason_code=reason_code,
             reason=reason,
+            upstream_name=target.name,
         )
 
         if decision == "DENY" and cfg.enable_mitigation:
@@ -254,6 +304,7 @@ async def handle_mcp_message(
                 request_id=nreq.request_id,
                 trace_id=nreq.trace_id,
                 session_id=nreq.session_id,
+                client_id=nreq.client_id,
                 client_ip=nreq.client_ip,
                 mcp_method=nreq.mcp_method,
                 tool_name=nreq.tool_name,
@@ -263,6 +314,7 @@ async def handle_mcp_message(
                 action_duration_sec=cfg.blocklist_duration_sec,
                 reason_code="MITIGATION_BLOCK",
                 reason=f"Blocked IP until epoch={int(expires_at)}",
+                upstream_name=target.name,
             )
 
         if decision == "DENY":
@@ -284,20 +336,23 @@ async def handle_mcp_message(
             request_id=nreq.request_id,
             trace_id=nreq.trace_id,
             session_id=nreq.session_id,
+            client_id=nreq.client_id,
             client_ip=nreq.client_ip,
             mcp_method=nreq.mcp_method,
             tool_name=nreq.tool_name,
             decision="ALLOW",
             reason_code="FORWARD",
-            reason=f"Forwarding to upstream: {cfg.upstream_url}",
+            reason=f"Forwarding to upstream '{target.name}': {target.url}",
+            upstream_name=target.name,
         )
 
-        status, data, latency_ms = await forward_json(cfg.upstream_url, nreq.raw_body, forward_headers)
+        status, data, latency_ms = await forward_json(target.url, nreq.raw_body, forward_headers)
         emitter.emit_response_returned(
             timestamp=now_iso(),
             request_id=nreq.request_id,
             trace_id=nreq.trace_id,
             session_id=nreq.session_id,
+            client_id=nreq.client_id,
             client_ip=nreq.client_ip,
             mcp_method=nreq.mcp_method,
             tool_name=nreq.tool_name,
@@ -306,16 +361,23 @@ async def handle_mcp_message(
             reason=f"Upstream responded with status={status}",
             upstream_status=status,
             latency_ms=round(latency_ms, 3),
+            upstream_name=target.name,
         )
 
         return status, data, headers_out
 
+    except UpstreamSelectionError as exc:
+        return 400, error_payload(trace_id, "UNKNOWN_UPSTREAM", str(exc)), {
+            "x-trace-id": trace_id,
+            "x-request-id": request_id,
+        }
     except Exception as exc:
         emitter.emit_error(
             timestamp=now_iso(),
             request_id=request_id,
             trace_id=trace_id,
             session_id=session_id,
+            client_id=client_id,
             client_ip=ip,
             mcp_method=method,
             tool_name=tool_name,

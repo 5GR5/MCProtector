@@ -1,5 +1,6 @@
 from __future__ import annotations
 import posixpath
+import re
 from typing import Any, Dict, List
 from proxy.models import NormalizedRequest, RiskEvaluation
 
@@ -17,7 +18,15 @@ class HeuristicScorer:
         "large_payload": 0.10,
         "filesystem_tool": 0.10,
         "missing_auth_token": 0.10,
+        "sql_injection": 0.40,
     }
+    SQL_PATTERNS = (
+        re.compile(r"'\s*OR\s+['\w]", re.IGNORECASE),
+        re.compile(r"\bOR\s+['\"]?\d+['\"]?\s*=\s*['\"]?\d+['\"]?", re.IGNORECASE),
+        re.compile(r"\bUNION\s+(?:ALL\s+)?SELECT\b", re.IGNORECASE),
+        re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
+        re.compile(r"\bxp_cmdshell\b", re.IGNORECASE),
+    )
 
     def __init__(self, settings: Dict[str, Any]):
         weights = settings.get("risk_weights") or {}
@@ -61,6 +70,16 @@ class HeuristicScorer:
             delta = float(self.weights.get("filesystem_tool", 0.1))
             score += delta
             details.append({"feature": "filesystem_tool", "delta": delta, "value": req.tool_name})
+
+        if any(
+            pattern.search(value)
+            for value in args.values()
+            if isinstance(value, str)
+            for pattern in self.SQL_PATTERNS
+        ):
+            delta = float(self.weights.get("sql_injection", 0.4))
+            score += delta
+            details.append({"feature": "sql_injection", "delta": delta, "value": None})
 
         if req.mcp_method == "tools/call" and not req.auth_token:
             delta = float(self.weights.get("missing_auth_token", 0.1))

@@ -53,6 +53,9 @@
     "session_id": {
       "type": ["string", "null"]
     },
+    "client_id": {
+      "type": ["string", "null"]
+    },
     "client_ip": {
       "type": "string"
     },
@@ -136,6 +139,9 @@
     },
     "upstream_status": {
       "type": ["integer", "null"]
+    },
+    "upstream_name": {
+      "type": ["string", "null"]
     }
   }
 }

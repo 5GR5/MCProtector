@@ -9,6 +9,7 @@ from .config import ProxyConfig
 from .dashboard import DashboardServerHandle, build_dashboard_state, start_dashboard_server, stop_dashboard_server
 from .mitigation import Blocklist
 from .pipeline import handle_mcp_message
+from .routing import UpstreamRouter
 
 cfg = ProxyConfig.load()
 
@@ -24,6 +25,11 @@ emitter = EventEmitter(
     trace_filter=cfg.trace_filter,
 )
 blocklist = Blocklist()
+router = UpstreamRouter(
+    cfg.upstreams or {"default": cfg.upstream_url},
+    cfg.default_upstream if cfg.upstreams else "default",
+    cfg.client_routes,
+)
 dashboard_state = build_dashboard_state(cfg, blocklist)
 dashboard_handle: DashboardServerHandle | None = None
 
@@ -50,6 +56,8 @@ async def health() -> dict[str, object]:
         "status": "ok",
         "dashboard_enabled": cfg.dashboard_enabled,
         "dashboard_port": cfg.dashboard_port if cfg.dashboard_enabled else None,
+        "default_upstream": router.default_upstream,
+        "upstreams": list(router.upstreams),
     }
 
 
@@ -58,7 +66,15 @@ async def mcp_message(request: Request) -> JSONResponse:
     body = await request.json()
     # Respect runtime dashboard toggle (if present) to enable/disable protection for demos
     product_enabled = getattr(dashboard_state, "product_enabled", True)
-    status, data, headers_out = await handle_mcp_message(request, body, cfg, emitter, blocklist, product_enabled=product_enabled)
+    status, data, headers_out = await handle_mcp_message(
+        request,
+        body,
+        cfg,
+        emitter,
+        blocklist,
+        router=router,
+        product_enabled=product_enabled,
+    )
     return JSONResponse(status_code=status, content=data, headers=headers_out)
 
 

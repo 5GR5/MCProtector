@@ -6,8 +6,16 @@ dashboard_port: 8081
 dashboard_admin_password: "admin123"
 dashboard_session_secret: "mcprotector-dashboard-secret"
 
-# Upstream MCP server endpoint (local PoC)
-upstream_url: "http://127.0.0.1:9000/mcp/message"
+# Named upstream MCP servers. Clients may select one with X-MCP-Server.
+upstreams:
+  primary: "http://127.0.0.1:9000/mcp/message"
+  secondary: "http://127.0.0.1:9001/mcp/message"
+default_upstream: "primary"
+
+# Optional sticky routes used when a client does not send X-MCP-Server.
+client_routes:
+  client-primary: "primary"
+  client-secondary: "secondary"
 
 # Model evaluation gate
 enable_model_eval: true

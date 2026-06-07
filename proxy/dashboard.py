@@ -9,6 +9,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -335,6 +336,51 @@ def _is_alert(event: PoCEvent) -> bool:
     )
 
 
+def _build_activity_series(
+    events: list[PoCEvent],
+    bucket_count: int = 12,
+    bucket_minutes: int = 5,
+) -> list[dict[str, Any]]:
+    decision_events = [
+        event
+        for event in events
+        if event.event_type.value == "DECISION_MADE"
+        and event.decision.value in ("ALLOW", "DENY")
+    ]
+    latest_timestamp = max(
+        (event.timestamp for event in decision_events),
+        default=datetime.now(timezone.utc),
+    )
+    now = datetime.now(timezone.utc)
+    end = now if now - latest_timestamp <= timedelta(minutes=bucket_minutes) else latest_timestamp
+    bucket_span = timedelta(minutes=bucket_minutes)
+    start = end - bucket_span * bucket_count
+    buckets = [
+        {
+            "start": start + bucket_span * index,
+            "allow": 0,
+            "deny": 0,
+        }
+        for index in range(bucket_count)
+    ]
+
+    for event in decision_events:
+        offset = event.timestamp - start
+        index = int(offset.total_seconds() // bucket_span.total_seconds())
+        if 0 <= index < bucket_count:
+            key = event.decision.value.lower()
+            buckets[index][key] += 1
+
+    return [
+        {
+            "label": bucket["start"].astimezone().strftime("%H:%M"),
+            "allow": bucket["allow"],
+            "deny": bucket["deny"],
+        }
+        for bucket in buckets
+    ]
+
+
 def _build_overview(state: DashboardState) -> dict[str, Any]:
     events = _read_events(state.cfg.log_file_path)
     decision_counts = Counter(
@@ -342,7 +388,15 @@ def _build_overview(state: DashboardState) -> dict[str, Any]:
     )
     tool_counts = Counter(event.tool_name or event.mcp_method for event in events)
     unique_trace_count = len({str(event.trace_id) for event in events})
-    unique_client_count = len({event.client_ip for event in events})
+    unique_client_count = len({
+        event.client_id or event.session_id or event.client_ip
+        for event in events
+    })
+    upstream_counts = Counter(
+        event.upstream_name
+        for event in events
+        if event.event_type.value == "REQUEST_FORWARDED" and event.upstream_name
+    )
     alert_events = [e for e in events if _is_alert(e)]
     alert_count = len(alert_events)
     open_high_alert_count = sum(
@@ -366,6 +420,10 @@ def _build_overview(state: DashboardState) -> dict[str, Any]:
         "security_score": security_score,
         "unique_trace_count": unique_trace_count,
         "unique_client_count": unique_client_count,
+        "configured_upstream_count": len(state.cfg.upstreams),
+        "default_upstream": state.cfg.default_upstream,
+        "upstream_counts": dict(upstream_counts),
+        "activity_series": _build_activity_series(events),
         "blocklist_count": len(state.blocklist_entries()),
         "decision_counts": dict(decision_counts),
         "top_tools": [
@@ -374,6 +432,131 @@ def _build_overview(state: DashboardState) -> dict[str, Any]:
         ],
         "top_alert": {"reason_code": top_alert[0], "count": top_alert[1]} if top_alert else None,
         "latest_event": latest_event,
+    }
+
+
+def _build_topology(
+    state: DashboardState,
+    client_filter: str | None = None,
+    server_filter: str | None = None,
+) -> dict[str, Any]:
+    events = _read_events(state.cfg.log_file_path)
+    forwarded = [
+        event
+        for event in events
+        if event.event_type.value == "REQUEST_FORWARDED" and event.upstream_name
+    ]
+
+    pair_counts: Counter[tuple[str, str]] = Counter()
+    pair_latest: dict[tuple[str, str], datetime] = {}
+    for event in forwarded:
+        client_id = event.client_id or event.session_id or event.client_ip
+        server_name = event.upstream_name
+        pair = (client_id, server_name)
+        pair_counts[pair] += 1
+        latest = pair_latest.get(pair)
+        if latest is None or event.timestamp > latest:
+            pair_latest[pair] = event.timestamp
+
+    all_clients = sorted({client_id for client_id, _ in pair_counts})
+    all_servers = sorted(set(state.cfg.upstreams) | {server for _, server in pair_counts})
+    selected_pairs = {
+        pair: count
+        for pair, count in pair_counts.items()
+        if (not client_filter or pair[0] == client_filter)
+        and (not server_filter or pair[1] == server_filter)
+    }
+
+    if client_filter:
+        visible_clients = {client_filter} if client_filter in all_clients else set()
+        visible_servers = {server for client, server in selected_pairs if client == client_filter}
+    elif server_filter:
+        visible_clients = {client for client, server in selected_pairs if server == server_filter}
+        visible_servers = {server_filter} if server_filter in all_servers else set()
+    else:
+        visible_clients = set(all_clients)
+        visible_servers = set(all_servers)
+
+    client_totals = Counter()
+    server_totals = Counter()
+    client_latest: dict[str, datetime] = {}
+    server_latest: dict[str, datetime] = {}
+    minimum_time = datetime.min.replace(tzinfo=timezone.utc)
+    for (client_id, server_name), count in selected_pairs.items():
+        client_totals[client_id] += count
+        server_totals[server_name] += count
+        latest = pair_latest[(client_id, server_name)]
+        if latest > client_latest.get(client_id, minimum_time):
+            client_latest[client_id] = latest
+        if latest > server_latest.get(server_name, minimum_time):
+            server_latest[server_name] = latest
+
+    nodes: list[dict[str, Any]] = [{
+        "id": "proxy",
+        "type": "proxy",
+        "label": "MCProtector Proxy",
+        "detail": state.proxy_url,
+        "request_count": sum(selected_pairs.values()),
+    }]
+    nodes.extend(
+        {
+            "id": f"client:{client_id}",
+            "type": "client",
+            "label": client_id,
+            "detail": "MCP client",
+            "request_count": client_totals[client_id],
+            "last_seen": (
+                client_latest[client_id].astimezone(timezone.utc).isoformat()
+                if client_id in client_latest else None
+            ),
+        }
+        for client_id in sorted(visible_clients)
+    )
+    nodes.extend(
+        {
+            "id": f"server:{server_name}",
+            "type": "server",
+            "label": server_name,
+            "detail": state.cfg.upstreams.get(server_name, "Observed upstream"),
+            "request_count": server_totals[server_name],
+            "last_seen": (
+                server_latest[server_name].astimezone(timezone.utc).isoformat()
+                if server_name in server_latest else None
+            ),
+            "configured": server_name in state.cfg.upstreams,
+        }
+        for server_name in sorted(visible_servers)
+    )
+
+    edges: list[dict[str, Any]] = []
+    edges.extend(
+        {
+            "source": f"client:{client_id}",
+            "target": "proxy",
+            "request_count": client_totals[client_id],
+        }
+        for client_id in sorted(visible_clients)
+        if client_totals[client_id]
+    )
+    edges.extend(
+        {
+            "source": "proxy",
+            "target": f"server:{server_name}",
+            "request_count": server_totals[server_name],
+        }
+        for server_name in sorted(visible_servers)
+        if server_totals[server_name]
+    )
+
+    return {
+        "generated_at": now_iso(),
+        "filter": {"client": client_filter, "server": server_filter},
+        "clients": all_clients,
+        "servers": all_servers,
+        "nodes": nodes,
+        "edges": edges,
+        "relationship_count": len(selected_pairs),
+        "forwarded_request_count": sum(selected_pairs.values()),
     }
 
 
@@ -1039,6 +1222,38 @@ def _dashboard_page(state: DashboardState) -> str:
     .metric-card.challenge {{
       background: linear-gradient(180deg, rgba(208, 134, 17, 0.08), rgba(255, 255, 255, 0.96));
     }}
+    .activity-chart-wrap {{
+      position: relative;
+      width: 100%;
+      height: 230px;
+      margin-top: 14px;
+    }}
+    .activity-chart {{
+      display: block;
+      width: 100%;
+      height: 100%;
+    }}
+    .chart-legend {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    .chart-key {{
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }}
+    .chart-swatch {{
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+    }}
+    .chart-swatch.allow {{ background: var(--green); }}
+    .chart-swatch.deny {{ background: var(--red); }}
     .summary-list,
     .list-stack,
     .scenario-list,
@@ -1502,6 +1717,7 @@ def _dashboard_page(state: DashboardState) -> str:
       <div class="actions">
         <button id="tab-home-btn" class="tab-btn pill active" type="button" onclick="switchTab('home')">Home Page</button>
         <button id="tab-advanced-btn" class="tab-btn pill" type="button" onclick="switchTab('advanced')">Advanced Info</button>
+        <a class="btn" href="/topology">Topology</a>
         <a class="btn" href="/tests">Tests</a>
         <form method="post" action="/logout" style="display:inline;">
           <button class="btn" type="submit">Log Out</button>
@@ -1558,9 +1774,15 @@ def _dashboard_page(state: DashboardState) -> str:
             <div class="summary-list" id="summary-bullets"></div>
           </article>
           <article class="surface-card">
-            <div class="eyebrow">Decision Breakdown</div>
-            <h3>Current request outcomes</h3>
-            <div class="severity-bars" id="decision-breakdown"></div>
+            <div class="eyebrow">Request Activity</div>
+            <h3>Allowed and denied traffic over time</h3>
+            <div class="activity-chart-wrap">
+              <canvas class="activity-chart" id="activity-chart" aria-label="Allowed and denied request activity chart"></canvas>
+            </div>
+            <div class="chart-legend">
+              <span class="chart-key"><span class="chart-swatch allow"></span>Allowed</span>
+              <span class="chart-key"><span class="chart-swatch deny"></span>Denied</span>
+            </div>
           </article>
         </div>
       </section>
@@ -1946,26 +2168,78 @@ def _dashboard_page(state: DashboardState) -> str:
       `).join("");
     }}
 
-    function renderDecisionBreakdown(data) {{
-      const decisions = data.decision_counts || {{}};
-      const rows = [
-        {{ label: "Allowed", key: "ALLOW", css: "allow" }},
-        {{ label: "Denied", key: "DENY", css: "deny" }},
-      ];
-      const total = rows.reduce((sum, row) => sum + (decisions[row.key] || 0), 0);
-      document.getElementById("decision-breakdown").innerHTML = rows.map((row) => {{
-        const value = decisions[row.key] || 0;
-        const width = total ? Math.max((value / total) * 100, value ? 6 : 0) : 0;
-        return `
-          <div class="severity-row">
-            <div class="table-cell-title">${{escapeHtml(row.label)}}</div>
-            <div class="severity-rail">
-              <div class="severity-fill ${{row.css}}" style="width: ${{width}}%;"></div>
-            </div>
-            <strong>${{value}}</strong>
-          </div>
-        `;
-      }}).join("") || emptyState("No decision data yet.");
+    let latestActivitySeries = [];
+
+    function renderActivityChart(series) {{
+      latestActivitySeries = Array.isArray(series) ? series : [];
+      const canvas = document.getElementById("activity-chart");
+      if (!canvas) return;
+      const bounds = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(320, Math.floor(bounds.width));
+      const height = Math.max(200, Math.floor(bounds.height));
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(ratio, ratio);
+      ctx.clearRect(0, 0, width, height);
+
+      const points = latestActivitySeries.length ? latestActivitySeries : [{{ label: "", allow: 0, deny: 0 }}];
+      const padding = {{ top: 18, right: 18, bottom: 32, left: 34 }};
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+      const maxValue = Math.max(1, ...points.flatMap((point) => [point.allow || 0, point.deny || 0]));
+
+      ctx.font = "12px Inter, Segoe UI, sans-serif";
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#d9e2ee";
+      ctx.fillStyle = "#627084";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let step = 0; step <= 4; step += 1) {{
+        const value = Math.round((maxValue * step) / 4);
+        const y = padding.top + plotHeight - (plotHeight * step) / 4;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+        ctx.fillText(String(value), padding.left - 8, y);
+      }}
+
+      const xFor = (index) => padding.left + (points.length === 1 ? plotWidth / 2 : (plotWidth * index) / (points.length - 1));
+      const yFor = (value) => padding.top + plotHeight - ((value || 0) / maxValue) * plotHeight;
+      const drawSeries = (key, color) => {{
+        ctx.beginPath();
+        points.forEach((point, index) => {{
+          const x = xFor(index);
+          const y = yFor(point[key]);
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }});
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.stroke();
+        points.forEach((point, index) => {{
+          ctx.beginPath();
+          ctx.arc(xFor(index), yFor(point[key]), 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.fill();
+        }});
+      }};
+      drawSeries("allow", "#159f63");
+      drawSeries("deny", "#cf3b32");
+
+      ctx.fillStyle = "#627084";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      const labelStep = Math.max(1, Math.ceil(points.length / 6));
+      points.forEach((point, index) => {{
+        if (index % labelStep === 0 || index === points.length - 1) {{
+          ctx.fillText(point.label || "", xFor(index), height - padding.bottom + 10);
+        }}
+      }});
     }}
 
     function renderSystemOverview(data) {{
@@ -1982,6 +2256,10 @@ def _dashboard_page(state: DashboardState) -> str:
         {{
           label: "Unique clients",
           value: data.unique_client_count || 0,
+        }},
+        {{
+          label: "MCP servers",
+          value: data.configured_upstream_count || 0,
         }},
         {{
           label: "Latest event",
@@ -2358,7 +2636,7 @@ def _dashboard_page(state: DashboardState) -> str:
         renderScorePanel(overview);
         renderSummaryMetrics(overview);
         renderSummaryBullets(overview, scenarios || {{ runs: [] }}, blocklist || {{ entries: [] }});
-        renderDecisionBreakdown(overview);
+        renderActivityChart(overview.activity_series || []);
         renderSystemOverview(overview);
         renderScenarios((scenarios && scenarios.runs) || []);
         renderTopTools(overview.top_tools || []);
@@ -2387,6 +2665,659 @@ def _dashboard_page(state: DashboardState) -> str:
 
     refreshDashboard();
     setInterval(refreshDashboard, 5000);
+    window.addEventListener("resize", () => renderActivityChart(latestActivitySeries));
+  </script>
+</body>
+</html>"""
+
+
+def _topology_page(state: DashboardState) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCProtector Connection Topology</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --panel-soft: #edf3fb;
+      --line: #d9e2ee;
+      --line-strong: #b9c8da;
+      --text: #182433;
+      --muted: #627084;
+      --blue: #2457ff;
+      --blue-deep: #143eb7;
+      --blue-soft: #e7efff;
+      --green: #159f63;
+      --green-soft: rgba(21, 159, 99, 0.14);
+      --amber: #d08611;
+      --amber-soft: rgba(208, 134, 17, 0.16);
+      --shadow: 0 18px 48px rgba(24, 36, 51, 0.08);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(36, 87, 255, 0.08), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(21, 159, 99, 0.08), transparent 24%),
+        linear-gradient(180deg, #f9fbfe 0%, var(--bg) 100%);
+    }}
+    button, select {{ font: inherit; }}
+    .shell {{
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }}
+    .topbar,
+    .brand,
+    .actions,
+    .legend,
+    .filter-actions {{
+      display: flex;
+      align-items: center;
+    }}
+    .topbar {{
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }}
+    .brand {{ gap: 12px; font-weight: 700; }}
+    .brand-mark {{
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--blue), var(--blue-deep));
+      box-shadow: 0 10px 26px rgba(36, 87, 255, 0.24);
+      position: relative;
+      flex-shrink: 0;
+    }}
+    .brand-mark::before,
+    .brand-mark::after {{
+      content: "";
+      position: absolute;
+      border: 2px solid rgba(255,255,255,.82);
+      border-radius: 8px;
+    }}
+    .brand-mark::before {{ inset: 10px; }}
+    .brand-mark::after {{ inset: 15px; border-radius: 4px; }}
+    .brand-copy small,
+    .eyebrow,
+    .field label {{
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }}
+    .actions {{ gap: 10px; flex-wrap: wrap; }}
+    .actions form {{ margin: 0; }}
+    .btn {{
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(24,36,51,.05);
+    }}
+    .btn-primary {{ background: var(--blue); color: white; border-color: var(--blue); }}
+    .hero,
+    .controls,
+    .graph-panel,
+    .detail-panel {{
+      background: var(--panel);
+      border: 1px solid rgba(24,36,51,.07);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }}
+    .hero {{
+      padding: 24px;
+      margin-bottom: 18px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: flex-end;
+    }}
+    h1 {{ margin: 5px 0 8px; font-size: 34px; letter-spacing: 0; }}
+    .hero p {{ margin: 0; color: var(--muted); line-height: 1.6; }}
+    .metrics {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(100px, 1fr));
+      gap: 10px;
+      min-width: min(100%, 380px);
+    }}
+    .metric {{
+      background: var(--panel-soft);
+      border-radius: 8px;
+      padding: 12px;
+    }}
+    .metric span {{ display: block; color: var(--muted); font-size: 12px; font-weight: 700; }}
+    .metric strong {{ display: block; margin-top: 5px; font-size: 23px; }}
+    .controls {{
+      padding: 16px;
+      margin-bottom: 18px;
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+      gap: 12px;
+      align-items: end;
+    }}
+    .field select {{
+      width: 100%;
+      margin-top: 7px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdff;
+      color: var(--text);
+      padding: 11px 38px 11px 12px;
+    }}
+    .filter-actions {{ gap: 8px; }}
+    .content {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 290px;
+      gap: 18px;
+      align-items: stretch;
+    }}
+    .graph-panel {{
+      min-width: 0;
+      overflow: hidden;
+      position: relative;
+    }}
+    .graph-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .graph-head h2 {{ margin: 3px 0 0; font-size: 20px; }}
+    .legend {{ gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; font-weight: 700; }}
+    .legend-item {{ display: inline-flex; align-items: center; gap: 6px; }}
+    .legend-dot {{ width: 10px; height: 10px; border-radius: 50%; }}
+    .legend-dot.client {{ background: var(--blue); }}
+    .legend-dot.proxy {{ background: var(--amber); }}
+    .legend-dot.server {{ background: var(--green); }}
+    .graph-stage {{
+      width: 100%;
+      min-height: 640px;
+      overflow: auto;
+      background:
+        linear-gradient(rgba(217,226,238,.48) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(217,226,238,.48) 1px, transparent 1px);
+      background-size: 32px 32px;
+      background-color: #fbfdff;
+    }}
+    #topology-svg {{ display: block; width: 100%; min-height: 640px; touch-action: none; }}
+    .edge {{ stroke: #a9b8ca; stroke-width: 2; fill: none; }}
+    .edge.active {{ stroke: #7591b5; stroke-width: 2.5; }}
+    .edge-label {{
+      fill: #627084;
+      font-size: 11px;
+      font-weight: 700;
+      paint-order: stroke;
+      stroke: #fbfdff;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+    }}
+    .node {{ cursor: pointer; }}
+    .node circle.main {{ stroke: white; stroke-width: 5; filter: url(#node-shadow); }}
+    .node.client circle.main {{ fill: var(--blue); }}
+    .node.proxy circle.main {{ fill: var(--amber); }}
+    .node.server circle.main {{ fill: var(--green); }}
+    .node.idle circle.main {{ fill: #708198; }}
+    .node:hover circle.main {{ stroke: #dce6f7; stroke-width: 8; }}
+    .node text {{ pointer-events: none; text-anchor: middle; fill: white; font-weight: 800; }}
+    .node .node-label {{ font-size: 12px; }}
+    .node .node-type {{ font-size: 9px; opacity: .8; letter-spacing: .08em; }}
+    .node .count-badge {{ fill: white; stroke-width: 2; }}
+    .node.client .count-badge {{ stroke: var(--blue); }}
+    .node.proxy .count-badge {{ stroke: var(--amber); }}
+    .node.server .count-badge {{ stroke: var(--green); }}
+    .node .count-text {{ fill: var(--text); font-size: 10px; }}
+    .detail-panel {{ padding: 18px; }}
+    .detail-panel h2 {{ margin: 4px 0 16px; font-size: 20px; }}
+    .detail-list {{ display: grid; gap: 10px; }}
+    .detail-row {{ background: var(--panel-soft); border-radius: 8px; padding: 12px; }}
+    .detail-row span {{ display: block; color: var(--muted); font-size: 12px; font-weight: 700; }}
+    .detail-row strong {{ display: block; margin-top: 5px; word-break: break-word; line-height: 1.4; }}
+    .empty {{
+      display: grid;
+      place-items: center;
+      min-height: 540px;
+      color: var(--muted);
+      font-weight: 700;
+      text-align: center;
+      padding: 30px;
+    }}
+    .status {{ margin-top: 16px; color: var(--muted); font-size: 13px; font-weight: 700; }}
+    @media (max-width: 900px) {{
+      .hero {{ align-items: stretch; flex-direction: column; }}
+      .content {{ grid-template-columns: 1fr; }}
+      .detail-panel {{ order: -1; }}
+      .detail-list {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+    }}
+    @media (max-width: 680px) {{
+      .shell {{ padding: 20px 14px 36px; }}
+      .topbar, .graph-head {{ align-items: flex-start; flex-direction: column; }}
+      .hero {{ padding: 20px; }}
+      h1 {{ font-size: 28px; }}
+      .metrics {{ grid-template-columns: repeat(3, 1fr); min-width: 0; }}
+      .controls {{ grid-template-columns: 1fr; }}
+      .filter-actions .btn {{ flex: 1; }}
+      .detail-list {{ grid-template-columns: 1fr; }}
+      .graph-stage, #topology-svg {{ min-height: 560px; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-copy">
+          <small>Security Platform</small>
+          <div>MCProtector Topology</div>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="btn" href="/">Dashboard</a>
+        <a class="btn" href="/tests">Tests</a>
+        <form method="post" action="/logout">
+          <button class="btn" type="submit">Log Out</button>
+        </form>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Connection Topology</div>
+        <h1>MCP clients, proxy, and servers</h1>
+        <p id="topology-caption">Live relationships observed through <code>{state.proxy_url}</code>.</p>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>Clients</span><strong id="client-count">0</strong></div>
+        <div class="metric"><span>Servers</span><strong id="server-count">0</strong></div>
+        <div class="metric"><span>Forwarded</span><strong id="request-count">0</strong></div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <div class="field">
+        <label for="client-filter">Client</label>
+        <select id="client-filter" onchange="filterByClient(this.value)">
+          <option value="">All clients</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="server-filter">MCP server</label>
+        <select id="server-filter" onchange="filterByServer(this.value)">
+          <option value="">All servers</option>
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn btn-primary" type="button" onclick="loadTopology()">Refresh</button>
+        <button class="btn" type="button" onclick="resetFilters()">Reset</button>
+      </div>
+    </section>
+
+    <div class="content">
+      <section class="graph-panel">
+        <div class="graph-head">
+          <div>
+            <div class="eyebrow">Network View</div>
+            <h2 id="graph-title">All observed connections</h2>
+          </div>
+          <div class="legend">
+            <span class="legend-item"><span class="legend-dot client"></span>Client</span>
+            <span class="legend-item"><span class="legend-dot proxy"></span>Proxy</span>
+            <span class="legend-item"><span class="legend-dot server"></span>MCP server</span>
+          </div>
+        </div>
+        <div class="graph-stage" id="graph-stage">
+          <svg id="topology-svg" role="img" aria-label="MCP connection topology"></svg>
+        </div>
+      </section>
+
+      <aside class="detail-panel">
+        <div class="eyebrow">Selection</div>
+        <h2 id="detail-title">Topology summary</h2>
+        <div class="detail-list" id="detail-list"></div>
+        <div class="status" id="status">Loading topology...</div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    let topologyData = null;
+    let selectedNodeId = null;
+
+    function escapeHtml(value) {{
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }}
+
+    function api(path) {{
+      return fetch(path, {{ credentials: "same-origin" }}).then(async (response) => {{
+        if (response.status === 401) {{
+          window.location = "/login";
+          return null;
+        }}
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{}}));
+          throw new Error(error.detail || `Request failed with status ${{response.status}}.`);
+        }}
+        return response.json();
+      }});
+    }}
+
+    function svgElement(name, attributes = {{}}) {{
+      const element = document.createElementNS(SVG_NS, name);
+      Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
+      return element;
+    }}
+
+    function shortLabel(value, maxLength = 16) {{
+      const text = String(value || "");
+      return text.length > maxLength ? text.slice(0, maxLength - 1) + "…" : text;
+    }}
+
+    function formatTimestamp(value) {{
+      if (!value) return "No traffic yet";
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+    }}
+
+    function populateFilters(data) {{
+      const clientSelect = document.getElementById("client-filter");
+      const serverSelect = document.getElementById("server-filter");
+      const activeClient = data.filter.client || "";
+      const activeServer = data.filter.server || "";
+      clientSelect.innerHTML = `<option value="">All clients</option>` + data.clients.map((client) =>
+        `<option value="${{escapeHtml(client)}}">${{escapeHtml(client)}}</option>`
+      ).join("");
+      serverSelect.innerHTML = `<option value="">All servers</option>` + data.servers.map((server) =>
+        `<option value="${{escapeHtml(server)}}">${{escapeHtml(server)}}</option>`
+      ).join("");
+      clientSelect.value = activeClient;
+      serverSelect.value = activeServer;
+    }}
+
+    function filterByClient(value) {{
+      document.getElementById("server-filter").value = "";
+      updateUrl(value ? {{ client: value }} : {{}});
+      loadTopology();
+    }}
+
+    function filterByServer(value) {{
+      document.getElementById("client-filter").value = "";
+      updateUrl(value ? {{ server: value }} : {{}});
+      loadTopology();
+    }}
+
+    function resetFilters() {{
+      updateUrl({{}});
+      selectedNodeId = null;
+      loadTopology();
+    }}
+
+    function updateUrl(filters) {{
+      const params = new URLSearchParams();
+      if (filters.client) params.set("client", filters.client);
+      if (filters.server) params.set("server", filters.server);
+      const query = params.toString();
+      history.replaceState(null, "", query ? `/topology?${{query}}` : "/topology");
+    }}
+
+    function activeQuery() {{
+      const params = new URLSearchParams(window.location.search);
+      const client = params.get("client");
+      const server = params.get("server");
+      const query = new URLSearchParams();
+      if (client) query.set("client", client);
+      else if (server) query.set("server", server);
+      return query.toString();
+    }}
+
+    function graphDimensions(nodes, width) {{
+      const clientCount = nodes.filter((node) => node.type === "client").length;
+      const serverCount = nodes.filter((node) => node.type === "server").length;
+      if (width < 700) {{
+        const columns = Math.max(1, Math.floor((width - 40) / 100));
+        const clientRows = Math.max(1, Math.ceil(clientCount / columns));
+        const serverRows = Math.max(1, Math.ceil(serverCount / columns));
+        return {{ height: Math.max(560, (clientRows + serverRows) * 100 + 300), columns }};
+      }}
+      const columns = Math.max(1, Math.floor((width * .34) / 110));
+      const rows = Math.max(
+        1,
+        Math.ceil(clientCount / columns),
+        Math.ceil(serverCount / columns),
+      );
+      return {{ height: Math.max(640, rows * 100 + 140), columns }};
+    }}
+
+    function layoutNodes(nodes, width, height, columns) {{
+      const proxy = nodes.find((node) => node.type === "proxy");
+      const clients = nodes.filter((node) => node.type === "client");
+      const servers = nodes.filter((node) => node.type === "server");
+      const positions = new Map();
+      const compact = width < 700;
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const clientRows = Math.max(1, Math.ceil(clients.length / columns));
+      positions.set(proxy.id, {{
+        x: centerX,
+        y: compact ? 75 + clientRows * 100 + 25 : centerY,
+      }});
+
+      function distribute(items, side) {{
+        if (!items.length) return;
+        items.forEach((node, index) => {{
+          if (compact) {{
+            const row = Math.floor(index / columns);
+            const column = index % columns;
+            const rowCount = Math.min(columns, items.length - row * columns);
+            const rowWidth = Math.max(0, (rowCount - 1) * 100);
+            const x = centerX - rowWidth / 2 + column * 100;
+            const y = side === "client"
+              ? 75 + row * 100
+              : 75 + clientRows * 100 + 150 + row * 100;
+            positions.set(node.id, {{ x, y }});
+          }} else {{
+            const row = Math.floor(index / columns);
+            const column = index % columns;
+            const y = 80 + row * 100;
+            const sideStart = side === "client" ? 70 : width * .66 + 35;
+            const available = width * .34 - 105;
+            const spacing = columns === 1 ? 0 : available / (columns - 1);
+            const x = sideStart + column * spacing;
+            positions.set(node.id, {{ x, y }});
+          }}
+        }});
+      }}
+
+      distribute(clients, "client");
+      distribute(servers, "server");
+      return positions;
+    }}
+
+    function renderGraph(data) {{
+      const svg = document.getElementById("topology-svg");
+      const stage = document.getElementById("graph-stage");
+      const width = Math.max(360, Math.floor(stage.clientWidth));
+      const dimensions = graphDimensions(data.nodes, width);
+      const height = dimensions.height;
+      svg.setAttribute("viewBox", `0 0 ${{width}} ${{height}}`);
+      svg.style.height = `${{height}}px`;
+      svg.innerHTML = "";
+
+      const defs = svgElement("defs");
+      const filter = svgElement("filter", {{ id: "node-shadow", x: "-40%", y: "-40%", width: "180%", height: "180%" }});
+      filter.appendChild(svgElement("feDropShadow", {{ dx: 0, dy: 7, stdDeviation: 7, "flood-color": "#182433", "flood-opacity": .18 }}));
+      defs.appendChild(filter);
+      const marker = svgElement("marker", {{ id: "arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 5, markerHeight: 5, orient: "auto-start-reverse" }});
+      marker.appendChild(svgElement("path", {{ d: "M 0 0 L 10 5 L 0 10 z", fill: "#8ca0b8" }}));
+      defs.appendChild(marker);
+      svg.appendChild(defs);
+
+      const nonProxyNodes = data.nodes.filter((node) => node.type !== "proxy");
+      if (!nonProxyNodes.length) {{
+        const text = svgElement("text", {{ x: width / 2, y: height / 2, "text-anchor": "middle", fill: "#627084", "font-weight": 700 }});
+        text.textContent = data.filter.client || data.filter.server
+          ? "No forwarded connections match this filter."
+          : "No client traffic has been forwarded yet.";
+        svg.appendChild(text);
+      }}
+
+      const positions = layoutNodes(data.nodes, width, height, dimensions.columns);
+      const nodeById = new Map(data.nodes.map((node) => [node.id, node]));
+
+      data.edges.forEach((edge) => {{
+        const source = positions.get(edge.source);
+        const target = positions.get(edge.target);
+        if (!source || !target) return;
+        const line = svgElement("line", {{
+          x1: source.x,
+          y1: source.y,
+          x2: target.x,
+          y2: target.y,
+          class: "edge active",
+          "marker-end": "url(#arrow)",
+        }});
+        svg.appendChild(line);
+        const label = svgElement("text", {{
+          x: (source.x + target.x) / 2,
+          y: (source.y + target.y) / 2 - 8,
+          class: "edge-label",
+          "text-anchor": "middle",
+        }});
+        label.textContent = `${{edge.request_count}} req`;
+        svg.appendChild(label);
+      }});
+
+      data.nodes.forEach((node) => {{
+        const point = positions.get(node.id);
+        if (!point) return;
+        const radius = node.type === "proxy" ? 48 : 38;
+        const group = svgElement("g", {{
+          class: `node ${{node.type}} ${{node.type === "server" && !node.request_count ? "idle" : ""}}`,
+          transform: `translate(${{point.x}} ${{point.y}})`,
+          tabindex: 0,
+          role: "button",
+        }});
+        group.dataset.nodeId = node.id;
+        const title = svgElement("title");
+        title.textContent = `${{node.label}} • ${{node.request_count || 0}} forwarded requests`;
+        group.appendChild(title);
+        group.appendChild(svgElement("circle", {{ class: "main", r: radius }}));
+
+        const typeText = svgElement("text", {{ class: "node-type", y: -7 }});
+        typeText.textContent = node.type.toUpperCase();
+        group.appendChild(typeText);
+        const labelText = svgElement("text", {{ class: "node-label", y: 10 }});
+        labelText.textContent = shortLabel(node.type === "proxy" ? "Proxy" : node.label);
+        group.appendChild(labelText);
+
+        const badgeX = radius * .72;
+        const badgeY = -radius * .72;
+        group.appendChild(svgElement("circle", {{ class: "count-badge", cx: badgeX, cy: badgeY, r: 13 }}));
+        const count = svgElement("text", {{ class: "count-text", x: badgeX, y: badgeY + 4 }});
+        count.textContent = String(node.request_count || 0);
+        group.appendChild(count);
+        group.addEventListener("click", () => selectNode(node));
+        group.addEventListener("keydown", (event) => {{
+          if (event.key === "Enter" || event.key === " ") selectNode(node);
+        }});
+        svg.appendChild(group);
+      }});
+
+      const selected = data.nodes.find((node) => node.id === selectedNodeId);
+      renderDetails(selected || data.nodes.find((node) => node.type === "proxy"), data);
+    }}
+
+    function selectNode(node) {{
+      selectedNodeId = node.id;
+      renderDetails(node, topologyData);
+      if (node.type === "client") {{
+        updateUrl({{ client: node.label }});
+        loadTopology();
+      }} else if (node.type === "server") {{
+        updateUrl({{ server: node.label }});
+        loadTopology();
+      }} else {{
+        resetFilters();
+      }}
+    }}
+
+    function renderDetails(node, data) {{
+      if (!node) return;
+      document.getElementById("detail-title").textContent = node.label;
+      const rows = [
+        ["Type", node.type === "server" ? "MCP server" : node.type],
+        ["Forwarded requests", node.request_count || 0],
+        ["Endpoint", node.detail || "Not available"],
+      ];
+      if (node.last_seen) rows.push(["Last seen", formatTimestamp(node.last_seen)]);
+      if (node.type === "server") rows.push(["Configured", node.configured ? "Yes" : "Observed only"]);
+      if (node.type === "proxy") rows.push(["Relationships", data.relationship_count || 0]);
+      document.getElementById("detail-list").innerHTML = rows.map(([label, value]) => `
+        <div class="detail-row">
+          <span>${{escapeHtml(label)}}</span>
+          <strong>${{escapeHtml(value)}}</strong>
+        </div>
+      `).join("");
+    }}
+
+    function updateSummary(data) {{
+      const visibleClients = data.nodes.filter((node) => node.type === "client").length;
+      const visibleServers = data.nodes.filter((node) => node.type === "server").length;
+      document.getElementById("client-count").textContent = visibleClients;
+      document.getElementById("server-count").textContent = visibleServers;
+      document.getElementById("request-count").textContent = data.forwarded_request_count || 0;
+      const filter = data.filter || {{}};
+      document.getElementById("graph-title").textContent = filter.client
+        ? `Connections for ${{filter.client}}`
+        : filter.server
+          ? `Clients connected to ${{filter.server}}`
+          : "All observed connections";
+    }}
+
+    async function loadTopology() {{
+      document.getElementById("status").textContent = "Refreshing topology...";
+      try {{
+        const query = activeQuery();
+        const data = await api("/api/topology" + (query ? `?${{query}}` : ""));
+        if (!data) return;
+        topologyData = data;
+        populateFilters(data);
+        updateSummary(data);
+        renderGraph(data);
+        document.getElementById("status").textContent = "Updated " + new Date().toLocaleTimeString();
+      }} catch (error) {{
+        document.getElementById("status").textContent = error.message || "Topology refresh failed.";
+      }}
+    }}
+
+    let resizeTimer = null;
+    window.addEventListener("resize", () => {{
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => topologyData && renderGraph(topologyData), 120);
+    }});
+    loadTopology();
+    setInterval(loadTopology, 5000);
   </script>
 </body>
 </html>"""
@@ -2774,6 +3705,7 @@ def _tests_page(state: DashboardState) -> str:
       </div>
       <div class="actions">
         <a class="btn" href="/">Dashboard</a>
+        <a class="btn" href="/topology">Topology</a>
         <button class="btn btn-primary" type="button" onclick="loadDefinitions()">Reload Tests</button>
       </div>
     </header>
@@ -3151,10 +4083,27 @@ def create_dashboard_app(state: DashboardState) -> FastAPI:
             return RedirectResponse(url="/login", status_code=303)
         return HTMLResponse(_tests_page(state))
 
+    @app.get("/topology", response_class=HTMLResponse)
+    async def topology_page(request: Request):
+        if not _session_is_valid(state.cfg.dashboard_session_secret, request.cookies.get(SESSION_COOKIE_NAME)):
+            return RedirectResponse(url="/login", status_code=303)
+        return HTMLResponse(_topology_page(state))
+
     @app.get("/api/overview")
     async def overview(request: Request) -> JSONResponse:
         _require_auth(request, state)
         return JSONResponse(_build_overview(state))
+
+    @app.get("/api/topology")
+    async def topology(
+        request: Request,
+        client: str | None = None,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_auth(request, state)
+        if client and server:
+            raise HTTPException(status_code=400, detail="Choose either a client or server filter")
+        return JSONResponse(_build_topology(state, client_filter=client, server_filter=server))
 
     @app.get("/api/events")
     async def events(request: Request, limit: int = 150) -> JSONResponse:

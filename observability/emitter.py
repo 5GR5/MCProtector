@@ -85,6 +85,8 @@ class EventEmitter:
         reason_code: str,
         reason: str,
         payload_size_bytes: Optional[int] = None,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         return self.emit(
             PoCEvent(
@@ -95,6 +97,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -103,6 +106,7 @@ class EventEmitter:
                 reason=reason,
                 severity=Severity.LOW,
                 payload_size_bytes=payload_size_bytes,
+                upstream_name=upstream_name,
             )
         )
 
@@ -123,6 +127,8 @@ class EventEmitter:
         reason_code: str,
         reason: str,
         stage_latency_ms: Optional[float] = None,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         opa_result_enum = OPAResult(opa_result)
         level = "WARN" if opa_result_enum == OPAResult.DENY else "INFO"
@@ -136,6 +142,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -148,6 +155,7 @@ class EventEmitter:
                 opa_matched_rules=opa_matched_rules,
                 violations=list(violations),
                 stage_latency_ms=stage_latency_ms,
+                upstream_name=upstream_name,
             )
         )
 
@@ -169,6 +177,8 @@ class EventEmitter:
         reason_code: str,
         reason: str,
         stage_latency_ms: Optional[float] = None,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         level = "WARN" if risk_score >= risk_threshold else "INFO"
         severity = _risk_severity(risk_score, risk_threshold)
@@ -181,6 +191,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -194,6 +205,7 @@ class EventEmitter:
                 risk_threshold=risk_threshold,
                 model_reason_summary=model_reason_summary,
                 stage_latency_ms=stage_latency_ms,
+                upstream_name=upstream_name,
             )
         )
 
@@ -210,6 +222,8 @@ class EventEmitter:
         decision: str | Decision,
         reason_code: str,
         reason: str,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         decision_value = Decision(decision)
         level = "WARN" if decision_value in (Decision.DENY, Decision.CHALLENGE) else "INFO"
@@ -223,6 +237,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -230,6 +245,7 @@ class EventEmitter:
                 reason_code=reason_code,
                 reason=reason,
                 severity=severity,
+                upstream_name=upstream_name,
             )
         )
 
@@ -249,6 +265,8 @@ class EventEmitter:
         action_duration_sec: int,
         reason_code: str,
         reason: str,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         return self.emit(
             PoCEvent(
@@ -259,6 +277,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -269,6 +288,7 @@ class EventEmitter:
                 action_type=action_type,
                 action_target=action_target,
                 action_duration_sec=action_duration_sec,
+                upstream_name=upstream_name,
             )
         )
 
@@ -285,6 +305,8 @@ class EventEmitter:
         decision: str | Decision,
         reason_code: str,
         reason: str,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         return self.emit(
             PoCEvent(
@@ -295,6 +317,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -302,6 +325,7 @@ class EventEmitter:
                 reason_code=reason_code,
                 reason=reason,
                 severity=Severity.LOW,
+                upstream_name=upstream_name,
             )
         )
 
@@ -320,6 +344,8 @@ class EventEmitter:
         reason: str,
         upstream_status: Optional[int] = None,
         latency_ms: Optional[float] = None,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         return self.emit(
             PoCEvent(
@@ -330,6 +356,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -339,6 +366,7 @@ class EventEmitter:
                 severity=Severity.LOW,
                 upstream_status=upstream_status,
                 latency_ms=latency_ms,
+                upstream_name=upstream_name,
             )
         )
 
@@ -354,6 +382,8 @@ class EventEmitter:
         tool_name: Optional[str],
         reason_code: str,
         reason: str,
+        client_id: Optional[str] = None,
+        upstream_name: Optional[str] = None,
     ) -> PoCEvent:
         return self.emit(
             PoCEvent(
@@ -364,6 +394,7 @@ class EventEmitter:
                 request_id=request_id,
                 trace_id=trace_id,
                 session_id=session_id,
+                client_id=client_id,
                 client_ip=client_ip,
                 mcp_method=mcp_method,
                 tool_name=tool_name,
@@ -371,6 +402,7 @@ class EventEmitter:
                 reason_code=reason_code,
                 reason=reason,
                 severity=Severity.HIGH,
+                upstream_name=upstream_name,
             )
         )
 

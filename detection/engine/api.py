@@ -61,7 +61,7 @@ def evaluate_risk(req: NormalizedRequest, threshold: float) -> RiskEvaluation:
     try:
         engine = get_engine()
         scorer = get_default_scorer(engine)
-        return scorer.score(req, engine, threshold)
+        return scorer.score(req, engine.context, threshold)
     except Exception as exc:
         return RiskEvaluation(
             model_name="heuristic-risk-scorer-v2",

@@ -15,7 +15,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .config import DEFAULT_HOST, DEFAULT_PORT, TOOL_DEFINITIONS
@@ -231,7 +231,8 @@ class MCPMethodError(Exception):
 def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
     """Run the MCP server."""
     server_address = (host, port)
-    httpd = HTTPServer(server_address, MCPRequestHandler)
+    httpd = ThreadingHTTPServer(server_address, MCPRequestHandler)
+    httpd.daemon_threads = True
 
     logger.info(f"=" * 60)
     logger.info(f"MCProtector PoC - MCP Server")

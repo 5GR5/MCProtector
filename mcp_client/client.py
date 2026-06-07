@@ -43,11 +43,13 @@ class MCPClient:
         client_id: str | None = None,
         token: str | None = None,
         forwarded_for: str | None = None,
+        target_server: str | None = None,
     ):
         self.server_url = server_url.rstrip('/')
         self.client_id = client_id or f"client-{uuid.uuid4().hex[:8]}"
         self.token = token or f"token-{uuid.uuid4().hex[:16]}"
         self.forwarded_for = forwarded_for or self._default_forwarded_for()
+        self.target_server = target_server
         self._request_counter = 0
 
     @staticmethod
@@ -77,6 +79,8 @@ class MCPClient:
             "X-Forwarded-For": self.forwarded_for,
             "Authorization": f"Bearer {self.token}"
         }
+        if self.target_server:
+            headers["X-MCP-Server"] = self.target_server
 
         request_body = json.dumps(request_data).encode('utf-8')
         req = urllib.request.Request(
@@ -369,6 +373,10 @@ def main():
         help='Client ID for requests'
     )
     parser.add_argument(
+        '--target-server',
+        help='Named upstream server configured by the proxy (sent as X-MCP-Server)'
+    )
+    parser.add_argument(
         '--token', '-t',
         default=None,
         help='Authorization token'
@@ -405,7 +413,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    client = MCPClient(args.server, args.client_id, args.token)
+    client = MCPClient(args.server, args.client_id, args.token, target_server=args.target_server)
 
     if args.command == 'tools':
         if args.tools_command == 'list':

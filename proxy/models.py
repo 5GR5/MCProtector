@@ -10,6 +10,7 @@ class NormalizedRequest(BaseModel):
 
     request_id: str
     trace_id: str
+    client_id: str
     client_ip: str
     session_id: Optional[str] = None
     mcp_method: str  # e.g., tools/call

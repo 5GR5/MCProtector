@@ -73,6 +73,7 @@ class PoCEvent(BaseModel):
     request_id: UUID
     trace_id: UUID
     session_id: Optional[str] = None
+    client_id: Optional[str] = None
     client_ip: str
     mcp_method: str
     tool_name: Optional[str] = None
@@ -102,6 +103,7 @@ class PoCEvent(BaseModel):
 
     payload_size_bytes: Optional[int] = None
     upstream_status: Optional[int] = None
+    upstream_name: Optional[str] = None
 
     @field_serializer("timestamp")
     def _serialize_timestamp(self, value: datetime) -> str:
