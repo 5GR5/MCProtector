@@ -1,4 +1,3 @@
-
 # MCProtector Proxy PoC (Local)
 
 This package is a runnable PoC proxy that:
@@ -362,12 +361,12 @@ python -m mcp_server.server --port 9001
 
 ### Tools
 
-| Tool             | Description     | Arguments            |
-| ---------------- | --------------- | -------------------- |
-| filesystem.read  | Read file       | `path`             |
-| filesystem.write | Write file      | `path`,`content` |
-| net.http_get     | HTTP GET (stub) | `url`              |
-| query_db         | SQL query (stub)| `query`            |
+| Tool             | Description      | Arguments            |
+| ---------------- | ---------------- | -------------------- |
+| filesystem.read  | Read file        | `path`             |
+| filesystem.write | Write file       | `path`,`content` |
+| net.http_get     | HTTP GET (stub)  | `url`              |
+| query_db         | SQL query (stub) | `query`            |
 
 ### Health
 
@@ -421,13 +420,13 @@ python -m mcp_client.client --server http://127.0.0.1:9000 scenario denied
 
 ### Detection Rules
 
-| Test   | Rule                 | Trigger                          |
-| ------ | -------------------- | -------------------------------- |
-| Test 1 | R2_UNSAFE_PARAMETER  | Read `/etc/passwd`             |
-| Test 2 | R1_DISALLOWED_TOOL   | Unknown tool `execute_command` |
-| Test 3 | R3_INVALID_ARGUMENTS | Missing required `path`        |
-| Test 4 | R2_UNSAFE_PARAMETER  | Write `/root/.bashrc`          |
-| SQL Test | SQL_INJECTION     | Query payload containing `OR 1=1` |
+| Test     | Rule                 | Trigger                            |
+| -------- | -------------------- | ---------------------------------- |
+| Test 1   | R2_UNSAFE_PARAMETER  | Read`/etc/passwd`                |
+| Test 2   | R1_DISALLOWED_TOOL   | Unknown tool`execute_command`    |
+| Test 3   | R3_INVALID_ARGUMENTS | Missing required`path`           |
+| Test 4   | R2_UNSAFE_PARAMETER  | Write`/root/.bashrc`             |
+| SQL Test | SQL_INJECTION        | Query payload containing`OR 1=1` |
 
 ---
 
@@ -478,7 +477,6 @@ uvicorn proxy.app:app --host 0.0.0.0 --port 8080
 ```
 
 3. Open the dashboard in your browser: http://127.0.0.1:8081 -> Tests tab. Use the "Blocked secret read" disallowed test under `filesystem.read` to run the scenario interactively.
-
 4. Or run the automated demo script (requires `requests` installed in the environment):
 
 ```bash
@@ -486,6 +484,7 @@ python demo/run_demo.py
 ```
 
 The script will:
+
 - Log into the dashboard with the default admin password (`admin123`).
 - Run the secret-file read test with the product ON (expect `DENY`).
 - Toggle the product OFF and run the same test (expect `ALLOW`).
@@ -580,4 +579,3 @@ Expected response: `unknown_upstream`.
 4. Reset, select an MCP server, and confirm unrelated clients disappear.
 5. Resize the browser or open mobile device tools and confirm the graph changes
    to a vertical client-proxy-server layout without overlapping circles.
-
